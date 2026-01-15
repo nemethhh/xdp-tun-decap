@@ -1,0 +1,59 @@
+services:
+  # Container where XDP program will be attached
+  xdp-target:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.target
+    container_name: xdp-target
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - BPF
+      - SYS_ADMIN
+    volumes:
+      - ../build:/build:ro
+      - /sys/kernel/btf:/sys/kernel/btf:ro
+      - /lib/modules:/lib/modules:ro
+      - /sys/fs/bpf:/sys/fs/bpf:rw
+    networks:
+      testnet:
+        ipv4_address: 10.200.0.10
+    command: /bin/bash -c "sleep infinity"
+
+  # Container that sends tunnel traffic (tunnel source)
+  tunnel-source:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.source
+    container_name: tunnel-source
+    cap_add:
+      - NET_ADMIN
+    networks:
+      testnet:
+        ipv4_address: 10.200.0.20
+    depends_on:
+      - xdp-target
+    command: /bin/bash -c "sleep infinity"
+
+  # Container for non-whitelisted source testing
+  untrusted-source:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.source
+    container_name: untrusted-source
+    cap_add:
+      - NET_ADMIN
+    networks:
+      testnet:
+        ipv4_address: 10.200.0.30
+    depends_on:
+      - xdp-target
+    command: /bin/bash -c "sleep infinity"
+
+networks:
+  testnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.200.0.0/24

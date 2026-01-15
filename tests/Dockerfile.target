@@ -1,0 +1,49 @@
+# Dockerfile for XDP target container
+FROM ubuntu:25.04
+
+# Install base packages
+RUN apt-get update && apt-get install -y \
+    iproute2 \
+    iputils-ping \
+    tcpdump \
+    net-tools \
+    ethtool \
+    iptables \
+    kmod \
+    linux-tools-generic \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install xdp-tools build dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    clang \
+    llvm \
+    gcc \
+    make \
+    pkg-config \
+    m4 \
+    libelf-dev \
+    zlib1g-dev \
+    libbpf-dev \
+    libpcap-dev \
+    emacs-nox \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build and install xdp-tools from source (version 1.5.5+ includes PR #509 fix for kernel 6.14+)
+RUN cd /tmp && \
+    git clone --branch v1.5.5 --depth 1 https://github.com/xdp-project/xdp-tools.git && \
+    cd xdp-tools && \
+    ./configure && \
+    make && \
+    make install && \
+    ldconfig && \
+    cd / && \
+    rm -rf /tmp/xdp-tools
+
+# Disable reverse path filtering
+RUN echo "net.ipv4.conf.all.rp_filter=0" >> /etc/sysctl.conf && \
+    echo "net.ipv4.conf.default.rp_filter=0" >> /etc/sysctl.conf
+
+WORKDIR /app
+
+CMD ["/bin/bash"]

@@ -6,6 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is an XDP (eXpress Data Path) program for high-performance decapsulation of GRE and IPIP tunnel traffic. It operates in kernel space for line-rate packet processing with whitelist-based access control.
 
+**Key Features:**
+- Full IPv6 support: handles IPv4/IPv6 inner and outer headers
+- GRE tunnel decapsulation (protocol 47)
+- IPIP tunnel decapsulation (IPv4-in-IPv4, protocol 4)
+- IPv6-in-IPv4 tunnel decapsulation (protocol 41)
+- IPv6 outer header support (IPv6 GRE, IPv4/IPv6-in-IPv6)
+- Per-CPU hash maps for lock-free whitelist lookups (IPv4 and IPv6)
+- Separate whitelist maps for IPv4 and IPv6 addresses
+- Comprehensive statistics tracking
+
 ## Build Commands
 
 ```bash
@@ -101,13 +111,28 @@ Integration tests use Docker containers with tcpdump-based verification. Tests v
 
 Three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`):
 
-1. **Whitelist** (`BPF_MAP_TYPE_PERCPU_HASH`):
-   - Key: IPv4 address (network byte order)
+1. **IPv4 Whitelist** (`BPF_MAP_TYPE_PERCPU_HASH`):
+   - Key: IPv4 address (32-bit, network byte order)
    - Value: `struct whitelist_value` (simple flag)
    - Lock-free per-CPU lookups for performance
+   - Map name: `tun_decap_whitelist`
+
+1b. **IPv6 Whitelist** (`BPF_MAP_TYPE_PERCPU_HASH`):
+   - Key: IPv6 address (128-bit, struct ipv6_addr with 4x 32-bit words)
+   - Value: `struct whitelist_value` (simple flag)
+   - Separate map for efficient key management
+   - Map name: `tun_decap_whitelist_v6`
 
 2. **Statistics** (`BPF_MAP_TYPE_PERCPU_ARRAY`):
-   - Per-CPU counters: rx_total, rx_gre, rx_ipip, decap_success, decap_failed, drop_not_whitelisted, drop_malformed, pass_non_tunnel
+   - Per-CPU counters:
+     - `rx_total`: Total packets received
+     - `rx_gre`, `rx_ipip`: GRE/IPIP packets received
+     - `rx_ipv6_in_ipv4`: IPv6-in-IPv4 (protocol 41) packets
+     - `rx_ipv6_outer`: IPv6 outer header packets
+     - `rx_gre_ipv6_inner`, `rx_ipip_ipv6_inner`: IPv6 inner packet counters
+     - `decap_success`, `decap_failed`: Decapsulation results
+     - `drop_not_whitelisted`, `drop_malformed`: Drop reasons
+     - `pass_non_tunnel`: Non-tunnel traffic passed through
    - Indices defined in `enum stat_idx` (src/include/tun_decap.h:26)
 
 3. **Config** (`BPF_MAP_TYPE_ARRAY`):
@@ -164,9 +189,21 @@ Load multiple programs with: `xdp-loader load -m native eth0 tun_decap.bpf.o oth
 
 ## Important Implementation Notes
 
-### Protocol Support Limitations
-- **GRE**: Only IPv4 inner packets supported (not IPv6)
-- **IPIP**: Only protocol 4 (IPv4-in-IPv4), not protocol 41 (IPv6-in-IPv4)
+### Protocol Support
+- **GRE**: Supports both IPv4 and IPv6 inner packets
+  - IPv4 outer + GRE + IPv4 inner ✓
+  - IPv4 outer + GRE + IPv6 inner ✓
+  - IPv6 outer + GRE + IPv4 inner ✓
+  - IPv6 outer + GRE + IPv6 inner ✓
+- **IPIP**: Supports all IP-in-IP combinations
+  - IPv4-in-IPv4 (protocol 4) ✓
+  - IPv6-in-IPv4 (protocol 41) ✓
+  - IPv4-in-IPv6 (protocol 4) ✓
+  - IPv6-in-IPv6 (protocol 41) ✓
+- **Whitelist**: Supports both IPv4 and IPv6 source addresses
+  - IPv4 whitelist: 32-bit addresses (per-CPU hash map)
+  - IPv6 whitelist: 128-bit addresses (separate per-CPU hash map)
+  - Independent management of IPv4 and IPv6 whitelists
 
 ### Docker Testing Environment
 - Uses **SKB (generic) mode** for veth interfaces (not native mode)
@@ -194,6 +231,27 @@ sudo bpftool map delete pinned /sys/fs/bpf/tun_decap_whitelist \
 
 # View whitelist
 sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist
+
+# IPv6 Whitelist Management
+# Add IPv6 address to whitelist (example: 2001:db8::1)
+# IPv6 addresses are stored as 4x 32-bit words in network byte order
+# 2001:db8::1 = 20010db8 00000000 00000000 00000001
+sudo bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+    key hex 20 01 0d b8 00 00 00 00 00 00 00 00 00 00 00 01 \
+    value hex 01
+
+# Remove IPv6 address from whitelist
+sudo bpftool map delete pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+    key hex 20 01 0d b8 00 00 00 00 00 00 00 00 00 00 00 01
+
+# View IPv6 whitelist
+sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist_v6
+
+# Example: Add 2001:db8::100:20 (common CDN/tunnel endpoint)
+# 2001:db8::100:20 = 20010db8 00000000 00000100 00000020
+sudo bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+    key hex 20 01 0d b8 00 00 00 00 00 00 01 00 00 00 00 20 \
+    value hex 01
 
 # Runtime configuration (processing is ENABLED by default, no init needed)
 # Disable all processing: set disabled=1
@@ -237,7 +295,7 @@ sudo ip link set dev eth0 xdp obj build/tun_decap.bpf.o sec xdp
 # Unload with ip link
 sudo ip link set dev eth0 xdp off
 
-# Clean up pinned maps
+# Clean up pinned maps (removes IPv4 whitelist, IPv6 whitelist, stats, and config)
 sudo rm -f /sys/fs/bpf/tun_decap_*
 ```
 

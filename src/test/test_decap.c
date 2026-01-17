@@ -87,7 +87,7 @@ static int run_xdp_test(int prog_fd,
 }
 
 /*
- * Add IP to whitelist map
+ * Add IPv4 address to whitelist map
  *
  * IMPORTANT: For PERCPU_HASH maps, we must provide an array of values,
  * one for each CPU. From userspace, bpf_map_update_elem() requires
@@ -104,6 +104,32 @@ static int whitelist_add(int map_fd, __u32 ip_be)
     }
 
     return bpf_map_update_elem(map_fd, &ip_be, values, BPF_ANY);
+}
+
+/*
+ * Add IPv6 address to whitelist map
+ *
+ * @map_fd: IPv6 whitelist map file descriptor
+ * @ip6_addr: IPv6 address as array of 4x 32-bit words (network byte order)
+ */
+static int whitelist_v6_add(int map_fd, __u32 ip6_addr[4])
+{
+    int ncpus = libbpf_num_possible_cpus();
+    struct whitelist_value values[ncpus];
+    struct ipv6_addr key;
+
+    /* Copy IPv6 address to key structure */
+    key.addr[0] = ip6_addr[0];
+    key.addr[1] = ip6_addr[1];
+    key.addr[2] = ip6_addr[2];
+    key.addr[3] = ip6_addr[3];
+
+    /* Initialize all per-CPU values */
+    for (int i = 0; i < ncpus; i++) {
+        values[i].allowed = 1;
+    }
+
+    return bpf_map_update_elem(map_fd, &key, values, BPF_ANY);
 }
 
 /*
@@ -537,6 +563,334 @@ static void test_gre_truncated(struct tun_decap_bpf *skel)
 }
 
 /*
+ * Test: GRE with IPv6 inner packet decapsulation
+ */
+static void test_gre_ipv6_inner(struct tun_decap_bpf *skel)
+{
+    const char *name = "GRE decap (IPv6 inner)";
+    int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+    int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
+    __u32 retval;
+    unsigned char data_out[256];
+    size_t data_out_len = sizeof(data_out);
+    int err;
+
+    /* Add whitelisted IP */
+    whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
+
+    /* Run test */
+    err = run_xdp_test(prog_fd,
+                       pkt_gre_ipv6_inner, PKT_GRE_IPV6_INNER_LEN,
+                       &retval,
+                       data_out, &data_out_len);
+    if (err < 0) {
+        TEST_FAIL(name, "bpf_prog_test_run failed");
+        return;
+    }
+
+    /* Verify XDP_PASS */
+    if (retval != XDP_PASS) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected XDP_PASS, got %d", retval);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify decapsulation */
+    if (data_out_len != PKT_GRE_IPV6_INNER_DECAP_LEN) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected len=%zu, got %zu",
+                 (size_t)PKT_GRE_IPV6_INNER_DECAP_LEN, data_out_len);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify EtherType is now IPv6 */
+    struct ethhdr *eth = (struct ethhdr *)data_out;
+    if (eth->h_proto != htons(0x86DD)) {
+        TEST_FAIL(name, "EtherType not set to IPv6");
+        return;
+    }
+
+    TEST_PASS(name);
+}
+
+/*
+ * Test: IPv6-in-IPv4 (protocol 41) decapsulation
+ */
+static void test_ipv6_in_ipv4(struct tun_decap_bpf *skel)
+{
+    const char *name = "IPv6-in-IPv4 decap (proto 41)";
+    int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+    int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
+    __u32 retval;
+    unsigned char data_out[256];
+    size_t data_out_len = sizeof(data_out);
+    int err;
+
+    /* Add whitelisted IP */
+    whitelist_add(wl_fd, TEST_IP_WHITELISTED_2);
+
+    /* Run test */
+    err = run_xdp_test(prog_fd,
+                       pkt_ipv6_in_ipv4, PKT_IPV6_IN_IPV4_LEN,
+                       &retval,
+                       data_out, &data_out_len);
+    if (err < 0) {
+        TEST_FAIL(name, "bpf_prog_test_run failed");
+        return;
+    }
+
+    /* Verify XDP_PASS */
+    if (retval != XDP_PASS) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected XDP_PASS, got %d", retval);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify decapsulation */
+    if (data_out_len != PKT_IPV6_IN_IPV4_DECAP_LEN) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected len=%zu, got %zu",
+                 (size_t)PKT_IPV6_IN_IPV4_DECAP_LEN, data_out_len);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify EtherType is now IPv6 */
+    struct ethhdr *eth = (struct ethhdr *)data_out;
+    if (eth->h_proto != htons(0x86DD)) {
+        TEST_FAIL(name, "EtherType not set to IPv6");
+        return;
+    }
+
+    TEST_PASS(name);
+}
+
+/*
+ * Test: IPv6 outer header + GRE + IPv4 inner (whitelisted)
+ */
+static void test_ipv6_outer_gre_ipv4(struct tun_decap_bpf *skel)
+{
+    const char *name = "IPv6 outer + GRE + IPv4 inner (whitelisted)";
+    int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+    int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
+    __u32 retval;
+    unsigned char data_out[256];
+    size_t data_out_len = sizeof(data_out);
+    int err;
+
+    /* Add IPv6 source (2001:db8::1) to whitelist */
+    __u32 ipv6_addr[] = TEST_IPV6_WHITELISTED_1;
+    err = whitelist_v6_add(wl_v6_fd, ipv6_addr);
+    if (err < 0) {
+        TEST_FAIL(name, "Failed to add IPv6 to whitelist");
+        return;
+    }
+
+    /* Run test */
+    err = run_xdp_test(prog_fd,
+                       pkt_ipv6_outer_gre_ipv4, PKT_IPV6_OUTER_GRE_IPV4_LEN,
+                       &retval,
+                       data_out, &data_out_len);
+    if (err < 0) {
+        TEST_FAIL(name, "bpf_prog_test_run failed");
+        return;
+    }
+
+    /* Verify XDP_PASS */
+    if (retval != XDP_PASS) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected XDP_PASS, got %d", retval);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify decapsulation */
+    if (data_out_len != PKT_IPV6_OUTER_GRE_IPV4_DECAP_LEN) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected len=%zu, got %zu",
+                 (size_t)PKT_IPV6_OUTER_GRE_IPV4_DECAP_LEN, data_out_len);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify EtherType is IPv4 */
+    struct ethhdr *eth = (struct ethhdr *)data_out;
+    if (eth->h_proto != htons(0x0800)) {
+        TEST_FAIL(name, "EtherType not set to IPv4");
+        return;
+    }
+
+    TEST_PASS(name);
+}
+
+/*
+ * Test: IPv4-in-IPv6 decapsulation (whitelisted)
+ */
+static void test_ipv4_in_ipv6(struct tun_decap_bpf *skel)
+{
+    const char *name = "IPv4-in-IPv6 decap (whitelisted)";
+    int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+    int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
+    __u32 retval;
+    unsigned char data_out[256];
+    size_t data_out_len = sizeof(data_out);
+    int err;
+
+    /* Add IPv6 source (2001:db8::2) to whitelist */
+    __u32 ipv6_addr[] = TEST_IPV6_WHITELISTED_2;
+    err = whitelist_v6_add(wl_v6_fd, ipv6_addr);
+    if (err < 0) {
+        TEST_FAIL(name, "Failed to add IPv6 to whitelist");
+        return;
+    }
+
+    /* Run test */
+    err = run_xdp_test(prog_fd,
+                       pkt_ipv4_in_ipv6, PKT_IPV4_IN_IPV6_LEN,
+                       &retval,
+                       data_out, &data_out_len);
+    if (err < 0) {
+        TEST_FAIL(name, "bpf_prog_test_run failed");
+        return;
+    }
+
+    /* Verify XDP_PASS */
+    if (retval != XDP_PASS) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected XDP_PASS, got %d", retval);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify decapsulation */
+    if (data_out_len != PKT_IPV4_IN_IPV6_DECAP_LEN) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected len=%zu, got %zu",
+                 (size_t)PKT_IPV4_IN_IPV6_DECAP_LEN, data_out_len);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify EtherType is IPv4 */
+    struct ethhdr *eth = (struct ethhdr *)data_out;
+    if (eth->h_proto != htons(0x0800)) {
+        TEST_FAIL(name, "EtherType not set to IPv4");
+        return;
+    }
+
+    TEST_PASS(name);
+}
+
+/*
+ * Test: IPv6-in-IPv6 decapsulation (whitelisted)
+ */
+static void test_ipv6_in_ipv6(struct tun_decap_bpf *skel)
+{
+    const char *name = "IPv6-in-IPv6 decap (whitelisted)";
+    int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+    int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
+    __u32 retval;
+    unsigned char data_out[256];
+    size_t data_out_len = sizeof(data_out);
+    int err;
+
+    /* Add IPv6 source (2001:db8::3) to whitelist */
+    __u32 ipv6_addr[] = TEST_IPV6_WHITELISTED_3;
+    err = whitelist_v6_add(wl_v6_fd, ipv6_addr);
+    if (err < 0) {
+        TEST_FAIL(name, "Failed to add IPv6 to whitelist");
+        return;
+    }
+
+    /* Run test */
+    err = run_xdp_test(prog_fd,
+                       pkt_ipv6_in_ipv6, PKT_IPV6_IN_IPV6_LEN,
+                       &retval,
+                       data_out, &data_out_len);
+    if (err < 0) {
+        TEST_FAIL(name, "bpf_prog_test_run failed");
+        return;
+    }
+
+    /* Verify XDP_PASS */
+    if (retval != XDP_PASS) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected XDP_PASS, got %d", retval);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify decapsulation */
+    if (data_out_len != PKT_IPV6_IN_IPV6_DECAP_LEN) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected len=%zu, got %zu",
+                 (size_t)PKT_IPV6_IN_IPV6_DECAP_LEN, data_out_len);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify EtherType is IPv6 */
+    struct ethhdr *eth = (struct ethhdr *)data_out;
+    if (eth->h_proto != htons(0x86DD)) {
+        TEST_FAIL(name, "EtherType not set to IPv6");
+        return;
+    }
+
+    TEST_PASS(name);
+}
+
+/*
+ * Test: IPv6 outer header packet from non-whitelisted source (should drop)
+ */
+static void test_ipv6_outer_blocked(struct tun_decap_bpf *skel)
+{
+    const char *name = "IPv6 outer drop (non-whitelisted)";
+    int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+    int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
+    int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
+    __u32 retval;
+    int err;
+
+    /* Clear IPv6 whitelist and add only specific addresses */
+    /* The packet has source 2001:db8::1, we'll only whitelist 2001:db8::99 */
+    __u32 ipv6_blocked[] = TEST_IPV6_BLOCKED;
+    whitelist_v6_add(wl_v6_fd, ipv6_blocked);
+
+    /* Get initial drop count */
+    __u64 drops_before = read_stat(stats_fd, STAT_DROP_NOT_WHITELISTED);
+
+    /* Run test with IPv6 outer packet from 2001:db8::1 (not whitelisted) */
+    err = run_xdp_test(prog_fd,
+                       pkt_ipv6_outer_gre_ipv4, PKT_IPV6_OUTER_GRE_IPV4_LEN,
+                       &retval,
+                       NULL, NULL);
+    if (err < 0) {
+        TEST_FAIL(name, "bpf_prog_test_run failed");
+        return;
+    }
+
+    /* Verify XDP_DROP */
+    if (retval != XDP_DROP) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Expected XDP_DROP, got %d", retval);
+        TEST_FAIL(name, buf);
+        return;
+    }
+
+    /* Verify drop counter incremented */
+    __u64 drops_after = read_stat(stats_fd, STAT_DROP_NOT_WHITELISTED);
+    if (drops_after <= drops_before) {
+        TEST_FAIL(name, "Drop counter not incremented");
+        return;
+    }
+
+    TEST_PASS(name);
+}
+
+/*
  * Test: Statistics are correctly updated
  */
 static void test_statistics(struct tun_decap_bpf *skel)
@@ -656,9 +1010,9 @@ int main(int argc, char **argv)
     {
         int cfg_fd = bpf_map__fd(skel->maps.tun_decap_config);
         struct tun_decap_config cfg = {
-            .enabled = 1,      /* Enable processing */
-            .allow_gre = 1,    /* Enable GRE decapsulation */
-            .allow_ipip = 1,   /* Enable IPIP decapsulation */
+            .disabled = 0,      /* Enable processing (0 = enabled) */
+            .disable_gre = 0,   /* Enable GRE (0 = enabled) */
+            .disable_ipip = 0,  /* Enable IPIP (0 = enabled) */
             ._pad = 0
         };
         __u32 cfg_key = 0;
@@ -671,20 +1025,33 @@ int main(int argc, char **argv)
         }
     }
 
-    printf("Config map initialized (enabled=1, GRE=1, IPIP=1)\n");
+    printf("Config map initialized (all processing enabled)\n");
 
     /* Run tests */
     printf("Running tests...\n\n");
 
+    /* IPv4 outer header tests */
     test_gre_whitelisted(skel);
     test_gre_blocked(skel);
     test_gre_with_key(skel);
+    test_gre_ipv6_inner(skel);
     test_ipip_whitelisted(skel);
     test_ipip_blocked(skel);
+    test_ipv6_in_ipv4(skel);
+
+    /* IPv6 outer header tests */
+    test_ipv6_outer_gre_ipv4(skel);
+    test_ipv4_in_ipv6(skel);
+    test_ipv6_in_ipv6(skel);
+    test_ipv6_outer_blocked(skel);
+
+    /* Pass-through and malformed packet tests */
     test_tcp_passthrough(skel);
     test_udp_passthrough(skel);
     test_ipv6_passthrough(skel);
     test_gre_truncated(skel);
+
+    /* Statistics verification */
     test_statistics(skel);
 
     /* Cleanup */

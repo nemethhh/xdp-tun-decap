@@ -417,6 +417,279 @@ static unsigned char pkt_gre_truncated[] = {
 #define PKT_GRE_TRUNCATED_LEN sizeof(pkt_gre_truncated)
 
 /*
+ * GRE-encapsulated IPv6 packet from whitelisted source
+ *
+ * Structure:
+ * [Ethernet: 14 bytes]
+ * [Outer IPv4: 20 bytes, proto=47 (GRE), src=10.0.0.1]
+ * [GRE: 4 bytes, proto=0x86DD (IPv6)]
+ * [Inner IPv6: 40 bytes, next_hdr=58 (ICMPv6)]
+ * [ICMPv6: 8 bytes]
+ *
+ * Total: 86 bytes
+ * After decap: 62 bytes (outer IP + GRE removed = 24 bytes)
+ */
+static unsigned char pkt_gre_ipv6_inner[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+    0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+    0x08, 0x00,                          /* EtherType: IPv4 */
+
+    /* Outer IPv4 header (20 bytes) */
+    0x45, 0x00,
+    0x00, 0x48,                          /* Total length: 72 bytes */
+    0x00, 0x01,
+    0x00, 0x00,
+    0x40,
+    0x2f,                                /* Protocol: 47 (GRE) */
+    0x00, 0x00,
+    0x0a, 0x00, 0x00, 0x01,              /* Source IP: 10.0.0.1 (whitelisted) */
+    0xc0, 0xa8, 0x01, 0x01,
+
+    /* GRE header (4 bytes) */
+    0x00, 0x00,
+    0x86, 0xdd,                          /* Protocol: IPv6 (0x86DD) */
+
+    /* Inner IPv6 header (40 bytes) */
+    0x60, 0x00, 0x00, 0x00,              /* Version=6, Traffic class, Flow label */
+    0x00, 0x08,                          /* Payload length: 8 bytes */
+    0x3a,                                /* Next header: 58 (ICMPv6) */
+    0x40,                                /* Hop limit: 64 */
+    /* Source address (16 bytes) */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+    /* Destination address (16 bytes) */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+
+    /* ICMPv6 Echo Request (8 bytes) */
+    0x80,                                /* Type: Echo Request */
+    0x00,                                /* Code */
+    0x00, 0x00,                          /* Checksum */
+    0x00, 0x01,                          /* Identifier */
+    0x00, 0x01,                          /* Sequence number */
+};
+
+#define PKT_GRE_IPV6_INNER_LEN sizeof(pkt_gre_ipv6_inner)
+#define PKT_GRE_IPV6_INNER_DECAP_LEN (PKT_GRE_IPV6_INNER_LEN - 20 - 4)
+
+/*
+ * IPv6-in-IPv4 encapsulated packet (protocol 41)
+ *
+ * Structure:
+ * [Ethernet: 14 bytes]
+ * [Outer IPv4: 20 bytes, proto=41 (IPv6-in-IPv4), src=10.0.0.2]
+ * [Inner IPv6: 40 bytes, next_hdr=58 (ICMPv6)]
+ * [ICMPv6: 8 bytes]
+ *
+ * Total: 82 bytes
+ * After decap: 62 bytes (outer IP removed = 20 bytes)
+ */
+static unsigned char pkt_ipv6_in_ipv4[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+    0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+    0x08, 0x00,                          /* EtherType: IPv4 */
+
+    /* Outer IPv4 header (20 bytes) */
+    0x45, 0x00,
+    0x00, 0x44,                          /* Total length: 68 bytes */
+    0x00, 0x01,
+    0x00, 0x00,
+    0x40,
+    0x29,                                /* Protocol: 41 (IPv6) */
+    0x00, 0x00,
+    0x0a, 0x00, 0x00, 0x02,              /* Source IP: 10.0.0.2 (whitelisted) */
+    0xc0, 0xa8, 0x01, 0x01,
+
+    /* Inner IPv6 header (40 bytes) */
+    0x60, 0x00, 0x00, 0x00,
+    0x00, 0x08,                          /* Payload length: 8 bytes */
+    0x3a,                                /* Next header: ICMPv6 */
+    0x40,                                /* Hop limit: 64 */
+    /* Source address */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+    /* Destination address */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+
+    /* ICMPv6 Echo Request */
+    0x80, 0x00,
+    0x00, 0x00,
+    0x00, 0x01,
+    0x00, 0x01,
+};
+
+#define PKT_IPV6_IN_IPV4_LEN sizeof(pkt_ipv6_in_ipv4)
+#define PKT_IPV6_IN_IPV4_DECAP_LEN (PKT_IPV6_IN_IPV4_LEN - 20)
+
+/*
+ * GRE-encapsulated packet with IPv6 outer header
+ *
+ * Structure:
+ * [Ethernet: 14 bytes]
+ * [Outer IPv6: 40 bytes, next_hdr=47 (GRE), src=2001:db8::1]
+ * [GRE: 4 bytes, proto=0x0800 (IPv4)]
+ * [Inner IPv4: 20 bytes, proto=6 (TCP)]
+ * [TCP: 20 bytes]
+ *
+ * Total: 98 bytes
+ * After decap: 54 bytes (outer IPv6 + GRE removed = 44 bytes)
+ */
+static unsigned char pkt_ipv6_outer_gre_ipv4[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+    0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+    0x86, 0xdd,                          /* EtherType: IPv6 */
+
+    /* Outer IPv6 header (40 bytes) */
+    0x60, 0x00, 0x00, 0x00,              /* Version=6, Traffic class, Flow label */
+    0x00, 0x2c,                          /* Payload length: 44 bytes */
+    0x2f,                                /* Next header: 47 (GRE) */
+    0x40,                                /* Hop limit: 64 */
+    /* Source address: 2001:db8::1 */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+    /* Destination address: 2001:db8::100 */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+
+    /* GRE header (4 bytes) */
+    0x00, 0x00,
+    0x08, 0x00,                          /* Protocol: IPv4 */
+
+    /* Inner IPv4 header (20 bytes) */
+    0x45, 0x00,
+    0x00, 0x28,                          /* Total length: 40 bytes */
+    0x00, 0x02,
+    0x00, 0x00,
+    0x40,
+    0x06,                                /* Protocol: TCP */
+    0x00, 0x00,
+    0xac, 0x10, 0x00, 0x01,              /* Source: 172.16.0.1 */
+    0xac, 0x10, 0x00, 0x02,              /* Dest: 172.16.0.2 */
+
+    /* TCP header (20 bytes) */
+    0x00, 0x50, 0x00, 0x51,
+    0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00,
+    0x50, 0x02,
+    0xff, 0xff,
+    0x00, 0x00,
+    0x00, 0x00,
+};
+
+#define PKT_IPV6_OUTER_GRE_IPV4_LEN sizeof(pkt_ipv6_outer_gre_ipv4)
+#define PKT_IPV6_OUTER_GRE_IPV4_DECAP_LEN (PKT_IPV6_OUTER_GRE_IPV4_LEN - 40 - 4)
+
+/*
+ * IPv4-in-IPv6 encapsulated packet
+ *
+ * Structure:
+ * [Ethernet: 14 bytes]
+ * [Outer IPv6: 40 bytes, next_hdr=4 (IPIP), src=2001:db8::2]
+ * [Inner IPv4: 20 bytes, proto=6 (TCP)]
+ * [TCP: 20 bytes]
+ *
+ * Total: 94 bytes
+ * After decap: 54 bytes (outer IPv6 removed = 40 bytes)
+ */
+static unsigned char pkt_ipv4_in_ipv6[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+    0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+    0x86, 0xdd,                          /* EtherType: IPv6 */
+
+    /* Outer IPv6 header (40 bytes) */
+    0x60, 0x00, 0x00, 0x00,
+    0x00, 0x28,                          /* Payload length: 40 bytes */
+    0x04,                                /* Next header: 4 (IPIP) */
+    0x40,                                /* Hop limit: 64 */
+    /* Source address: 2001:db8::2 */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+    /* Destination address: 2001:db8::100 */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+
+    /* Inner IPv4 header (20 bytes) */
+    0x45, 0x00,
+    0x00, 0x28,
+    0x00, 0x02,
+    0x00, 0x00,
+    0x40,
+    0x06,                                /* Protocol: TCP */
+    0x00, 0x00,
+    0xac, 0x10, 0x00, 0x01,
+    0xac, 0x10, 0x00, 0x02,
+
+    /* TCP header (20 bytes) */
+    0x00, 0x50, 0x00, 0x51,
+    0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00,
+    0x50, 0x02,
+    0xff, 0xff,
+    0x00, 0x00,
+    0x00, 0x00,
+};
+
+#define PKT_IPV4_IN_IPV6_LEN sizeof(pkt_ipv4_in_ipv6)
+#define PKT_IPV4_IN_IPV6_DECAP_LEN (PKT_IPV4_IN_IPV6_LEN - 40)
+
+/*
+ * IPv6-in-IPv6 encapsulated packet
+ *
+ * Structure:
+ * [Ethernet: 14 bytes]
+ * [Outer IPv6: 40 bytes, next_hdr=41 (IPv6), src=2001:db8::3]
+ * [Inner IPv6: 40 bytes, next_hdr=58 (ICMPv6)]
+ * [ICMPv6: 8 bytes]
+ *
+ * Total: 102 bytes
+ * After decap: 62 bytes (outer IPv6 removed = 40 bytes)
+ */
+static unsigned char pkt_ipv6_in_ipv6[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+    0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+    0x86, 0xdd,                          /* EtherType: IPv6 */
+
+    /* Outer IPv6 header (40 bytes) */
+    0x60, 0x00, 0x00, 0x00,
+    0x00, 0x30,                          /* Payload length: 48 bytes */
+    0x29,                                /* Next header: 41 (IPv6) */
+    0x40,                                /* Hop limit: 64 */
+    /* Source address: 2001:db8::3 */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+    /* Destination address: 2001:db8::100 */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+
+    /* Inner IPv6 header (40 bytes) */
+    0x60, 0x00, 0x00, 0x00,
+    0x00, 0x08,                          /* Payload length: 8 bytes */
+    0x3a,                                /* Next header: ICMPv6 */
+    0x40,                                /* Hop limit: 64 */
+    /* Source address */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0a,
+    /* Destination address */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0b,
+
+    /* ICMPv6 Echo Request */
+    0x80, 0x00,
+    0x00, 0x00,
+    0x00, 0x01,
+    0x00, 0x01,
+};
+
+#define PKT_IPV6_IN_IPV6_LEN sizeof(pkt_ipv6_in_ipv6)
+#define PKT_IPV6_IN_IPV6_DECAP_LEN (PKT_IPV6_IN_IPV6_LEN - 40)
+
+/*
  * Test IP addresses for whitelist
  */
 #define TEST_IP_WHITELISTED_1   0x0100000a  /* 10.0.0.1 in little-endian */
@@ -427,5 +700,17 @@ static unsigned char pkt_gre_truncated[] = {
 #define TEST_IP_WHITELISTED_1_BE 0x0a000001
 #define TEST_IP_WHITELISTED_2_BE 0x0a000002
 #define TEST_IP_BLOCKED_BE       0x0b000001
+
+/*
+ * Test IPv6 addresses for whitelist
+ * 2001:db8::1 (whitelisted)
+ * 2001:db8::2 (whitelisted)
+ * 2001:db8::3 (whitelisted)
+ * 2001:db8::99 (not whitelisted)
+ */
+#define TEST_IPV6_WHITELISTED_1 { 0x20010db8, 0x00000000, 0x00000000, 0x00000001 }
+#define TEST_IPV6_WHITELISTED_2 { 0x20010db8, 0x00000000, 0x00000000, 0x00000002 }
+#define TEST_IPV6_WHITELISTED_3 { 0x20010db8, 0x00000000, 0x00000000, 0x00000003 }
+#define TEST_IPV6_BLOCKED       { 0x20010db8, 0x00000000, 0x00000000, 0x00000099 }
 
 #endif /* __TEST_PACKETS_H */

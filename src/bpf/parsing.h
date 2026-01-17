@@ -151,6 +151,63 @@ static __always_inline int peek_iphdr(struct hdr_cursor *cursor,
 }
 
 /*
+ * Parse IPv6 header
+ *
+ * Validates bounds and advances cursor past IPv6 header.
+ * IPv6 header is fixed 40 bytes (unlike IPv4 with variable IHL).
+ * Extension headers are not handled here - they follow the main header.
+ *
+ * @cursor: Header cursor (updated on success)
+ * @ip6h: Pointer to store IPv6 header pointer
+ * @return: IPv6 header length (40) on success, or -1 on error
+ */
+static __always_inline int parse_ipv6hdr(struct hdr_cursor *cursor,
+                                         struct ipv6hdr **ip6h)
+{
+    struct ipv6hdr *hdr = cursor->pos;
+
+    /* Bounds check for IPv6 header (fixed 40 bytes) */
+    if ((void *)(hdr + 1) > cursor->end)
+        return -1;
+
+    /* Validate IPv6 version field */
+    if (((hdr->priority << 4) | (hdr->version >> 4)) != 6)
+        return -1;
+
+    *ip6h = hdr;
+    cursor_advance(cursor, sizeof(*hdr));
+
+    return sizeof(*hdr);
+}
+
+/*
+ * Parse IPv6 header without advancing cursor
+ *
+ * Useful when you need to examine the header but keep
+ * the cursor at the IPv6 header position.
+ *
+ * @cursor: Header cursor (not modified)
+ * @ip6h: Pointer to store IPv6 header pointer
+ * @return: IPv6 header length (40) on success, or -1 on error
+ */
+static __always_inline int peek_ipv6hdr(struct hdr_cursor *cursor,
+                                        struct ipv6hdr **ip6h)
+{
+    struct ipv6hdr *hdr = cursor->pos;
+
+    /* Bounds check for IPv6 header */
+    if ((void *)(hdr + 1) > cursor->end)
+        return -1;
+
+    /* Validate IPv6 version field */
+    if (((hdr->priority << 4) | (hdr->version >> 4)) != 6)
+        return -1;
+
+    *ip6h = hdr;
+    return sizeof(*hdr);
+}
+
+/*
  * Check pointer bounds safely
  *
  * This is the core pattern required by the BPF verifier.

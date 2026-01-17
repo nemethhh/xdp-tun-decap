@@ -133,11 +133,30 @@ static int whitelist_v6_add(int map_fd, __u32 ip6_addr[4])
 }
 
 /*
- * Clear whitelist map
+ * Clear whitelist map (IPv4)
  */
 static int whitelist_clear(int map_fd)
 {
     __u32 key, next_key;
+
+    if (bpf_map_get_next_key(map_fd, NULL, &key) != 0)
+        return 0;  /* Map is empty */
+
+    while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
+        bpf_map_delete_elem(map_fd, &key);
+        key = next_key;
+    }
+    bpf_map_delete_elem(map_fd, &key);
+
+    return 0;
+}
+
+/*
+ * Clear IPv6 whitelist map
+ */
+static int whitelist_v6_clear(int map_fd)
+{
+    struct ipv6_addr key, next_key;
 
     if (bpf_map_get_next_key(map_fd, NULL, &key) != 0)
         return 0;  /* Map is empty */
@@ -856,6 +875,7 @@ static void test_ipv6_outer_blocked(struct tun_decap_bpf *skel)
 
     /* Clear IPv6 whitelist and add only specific addresses */
     /* The packet has source 2001:db8::1, we'll only whitelist 2001:db8::99 */
+    whitelist_v6_clear(wl_v6_fd);
     __u32 ipv6_blocked[] = TEST_IPV6_BLOCKED;
     whitelist_v6_add(wl_v6_fd, ipv6_blocked);
 

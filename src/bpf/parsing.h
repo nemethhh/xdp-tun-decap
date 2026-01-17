@@ -171,7 +171,7 @@ static __always_inline int parse_ipv6hdr(struct hdr_cursor *cursor,
         return -1;
 
     /* Validate IPv6 version field */
-    if (((hdr->priority << 4) | (hdr->version >> 4)) != 6)
+    if (hdr->version != 6)
         return -1;
 
     *ip6h = hdr;
@@ -200,7 +200,7 @@ static __always_inline int peek_ipv6hdr(struct hdr_cursor *cursor,
         return -1;
 
     /* Validate IPv6 version field */
-    if (((hdr->priority << 4) | (hdr->version >> 4)) != 6)
+    if (hdr->version != 6)
         return -1;
 
     *ip6h = hdr;

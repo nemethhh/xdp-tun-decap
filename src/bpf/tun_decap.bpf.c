@@ -430,7 +430,7 @@ static __always_inline int handle_ipv6_in_ipv4(struct xdp_md *ctx,
     }
 
     /* Validate inner IPv6 header version */
-    if (((inner_ip6h->priority << 4) | (inner_ip6h->version >> 4)) != 6) {
+    if (inner_ip6h->version != 6) {
         update_stat(STAT_DROP_MALFORMED);
         return XDP_DROP;
     }
@@ -574,7 +574,7 @@ static __always_inline int handle_ipip_ipv6(struct xdp_md *ctx,
             return XDP_DROP;
         }
 
-        if (((inner_ip6h->priority << 4) | (inner_ip6h->version >> 4)) != 6) {
+        if (inner_ip6h->version != 6) {
             update_stat(STAT_DROP_MALFORMED);
             return XDP_DROP;
         }
@@ -690,7 +690,7 @@ int xdp_tun_decap(struct xdp_md *ctx)
             return XDP_PASS;
 
         /* Validate IPv6 version */
-        if (((ip6h->priority << 4) | (ip6h->version >> 4)) != 6)
+        if (ip6h->version != 6)
             return XDP_PASS;
 
         /* Check for tunnel protocols in IPv6 next header */

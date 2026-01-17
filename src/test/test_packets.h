@@ -707,10 +707,14 @@ static unsigned char pkt_ipv6_in_ipv6[] = {
  * 2001:db8::2 (whitelisted)
  * 2001:db8::3 (whitelisted)
  * 2001:db8::99 (not whitelisted)
+ *
+ * NOTE: Values are in network byte order (big-endian) as stored in struct in6_addr.
+ * On little-endian systems, each 32-bit word is byte-swapped when accessed via u6_addr32[].
+ * Packet bytes 0x20 0x01 0x0d 0xb8 -> 0xb80d0120 on little-endian
  */
-#define TEST_IPV6_WHITELISTED_1 { 0x20010db8, 0x00000000, 0x00000000, 0x00000001 }
-#define TEST_IPV6_WHITELISTED_2 { 0x20010db8, 0x00000000, 0x00000000, 0x00000002 }
-#define TEST_IPV6_WHITELISTED_3 { 0x20010db8, 0x00000000, 0x00000000, 0x00000003 }
-#define TEST_IPV6_BLOCKED       { 0x20010db8, 0x00000000, 0x00000000, 0x00000099 }
+#define TEST_IPV6_WHITELISTED_1 { 0xb80d0120, 0x00000000, 0x00000000, 0x01000000 }
+#define TEST_IPV6_WHITELISTED_2 { 0xb80d0120, 0x00000000, 0x00000000, 0x02000000 }
+#define TEST_IPV6_WHITELISTED_3 { 0xb80d0120, 0x00000000, 0x00000000, 0x03000000 }
+#define TEST_IPV6_BLOCKED       { 0xb80d0120, 0x00000000, 0x00000000, 0x99000000 }
 
 #endif /* __TEST_PACKETS_H */

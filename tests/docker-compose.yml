@@ -19,6 +19,7 @@ services:
     networks:
       testnet:
         ipv4_address: 10.200.0.10
+        ipv6_address: fd00:db8:1::10
     command: /bin/bash -c "sleep infinity"
 
   # Container that sends tunnel traffic (tunnel source)
@@ -32,6 +33,7 @@ services:
     networks:
       testnet:
         ipv4_address: 10.200.0.20
+        ipv6_address: fd00:db8:1::20
     depends_on:
       - xdp-target
     command: /bin/bash -c "sleep infinity"
@@ -47,6 +49,7 @@ services:
     networks:
       testnet:
         ipv4_address: 10.200.0.30
+        ipv6_address: fd00:db8:1::30
     depends_on:
       - xdp-target
     command: /bin/bash -c "sleep infinity"
@@ -54,6 +57,10 @@ services:
 networks:
   testnet:
     driver: bridge
+    enable_ipv6: true
     ipam:
+      driver: default
       config:
         - subnet: 10.200.0.0/24
+        - subnet: fd00:db8:1::/64
+          gateway: fd00:db8:1::1

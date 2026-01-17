@@ -1,6 +1,6 @@
 # Integration Tests
 
-Comprehensive Docker Compose-based integration tests for the XDP tunnel decapsulation program using **tcpdump-based verification** with unique payload markers.
+Comprehensive Docker Compose-based integration tests for the XDP tunnel decapsulation program using **tcpdump-based verification** with unique payload markers. Includes full IPv4 and IPv6 support.
 
 ## Test Methodology
 
@@ -15,9 +15,10 @@ This approach provides **definitive proof** that packets are actually being deca
 
 ## Prerequisites
 
-- Docker and Docker Compose installed
+- Docker and Docker Compose installed with IPv6 support
 - Compiled XDP program: `make all` (builds `build/tun_decap.bpf.o`)
 - Host kernel with XDP support (Linux 5.17+ with `CONFIG_DEBUG_INFO_BTF=y`)
+- Host kernel with IPv6 support enabled (standard in modern kernels)
 - xdp-tools 1.5.5+ (automatically built from source in test container)
   - **Important**: Kernel 6.14+ requires xdp-tools 1.5.5+ (includes PR #509 fix for packet modification)
   - Earlier versions will fail with "Extension program changes packet data" error
@@ -33,21 +34,38 @@ The test environment consists of three containers orchestrated from the host.
 1. **xdp-target**: Container where the XDP program is attached
    - Runs with privileged mode and CAP_BPF for XDP attachment
    - Receives tunnel traffic and decapsulates it
-   - IP: 10.200.0.10
+   - IPv4: 10.200.0.10
+   - IPv6: fd00:db8:1::10
    - Has xdp-tools and bpftool for program management
 
 2. **tunnel-source**: Container that generates tunnel traffic (whitelisted)
    - Sends GRE/IPIP encapsulated packets using Scapy
    - Simulates CDN/tunnel provider
-   - IP: 10.200.0.20
+   - IPv4: 10.200.0.20
+   - IPv6: fd00:db8:1::20
 
 3. **untrusted-source**: Container for non-whitelisted source testing
    - Generates tunnel traffic that should be dropped
-   - Tests whitelist enforcement
-   - IP: 10.200.0.30
+   - Tests whitelist enforcement (IPv4 and IPv6)
+   - IPv4: 10.200.0.30
+   - IPv6: fd00:db8:1::30
 
 Test orchestration runs from the HOST using `docker exec` to communicate with containers.
 This avoids Docker-in-Docker complexity.
+
+### IPv6 Support
+
+The test environment fully supports IPv6 tunneling:
+- Containers have both IPv4 and IPv6 addresses assigned
+- Separate IPv6 whitelist map (`tun_decap_whitelist_v6`) for IPv6 source addresses
+- Tests cover all IPv4/IPv6 outer/inner header combinations
+- Docker network is configured with IPv6 subnet: `fd00:db8:1::/64`
+
+**Key IPv6 Features:**
+- IPv6 outer headers with GRE (both IPv4 and IPv6 inner)
+- IPv4-in-IPv6 (protocol 4) and IPv6-in-IPv6 (protocol 41) tunnels
+- Independent whitelist management for IPv4 and IPv6
+- Per-CPU hash maps for lock-free IPv6 address lookups
 
 ## Running Tests
 
@@ -190,35 +208,94 @@ Tests that both whitelisted and non-whitelisted sources behave correctly when se
 
 Sends 100 GRE packets rapidly and verifies at least 95% are successfully decapsulated (allows for minor packet loss during high volume).
 
+### Test 20: IPv6 Outer + GRE + IPv4 Inner
+**Payload Marker**: `TEST_GRE_IPV6_OUTER_IPV4_INNER`
+
+Tests GRE tunnel with IPv6 outer header and IPv4 inner packet. Verifies IPv6 source address whitelist checking and proper decapsulation.
+
+### Test 21: IPv6 Outer + GRE + IPv6 Inner
+**Payload Marker**: `TEST_GRE_IPV6_OUTER_IPV6_INNER`
+
+Tests GRE tunnel with both IPv6 outer and IPv6 inner headers. Validates full IPv6 encapsulation/decapsulation path.
+
+### Test 22: IPv6 GRE with Optional Fields
+**Payload Marker**: `TEST_GRE_IPV6_ALL_FLAGS`
+
+Tests IPv6 GRE packets with checksum, key, and sequence fields to verify optional field handling with IPv6 outer headers.
+
+### Test 23: IPv4-in-IPv6 (Protocol 4)
+**Payload Marker**: `TEST_IPIP_IPV4_IN_IPV6`
+
+Tests IPv4-in-IPv6 tunnel (protocol 4) with IPv6 outer header and IPv4 inner packet.
+
+### Test 24: IPv6-in-IPv4 (Protocol 41)
+**Payload Marker**: `TEST_IPIP_IPV6_IN_IPV4`
+
+Tests IPv6-in-IPv4 tunnel (protocol 41) with IPv4 outer header and IPv6 inner packet.
+
+### Test 25: IPv6-in-IPv6 (Protocol 41)
+**Payload Marker**: `TEST_IPIP_IPV6_IN_IPV6`
+
+Tests IPv6-in-IPv6 tunnel (protocol 41) with both IPv6 outer and inner headers.
+
+### Test 26: IPv6 Non-Whitelisted Source (Should Drop)
+**Payload Marker**: `TEST_GRE_IPV6_BASIC` (should NOT appear)
+
+Sends tunnel traffic from untrusted IPv6 source that is not in the IPv6 whitelist. Uses negative verification to confirm packets were dropped.
+
+### Test 27: Mixed IPv4/IPv6 Tunnel Traffic
+**Verification**: Counts markers from both IPv4 and IPv6 tunnel packets
+
+Tests simultaneous processing of IPv4 and IPv6 tunnel traffic from whitelisted sources. Verifies independent whitelist management for both IP versions.
+
+### Test 28: IPv6 Large Payload
+**Payload Marker**: `TEST_IPV6_LARGE_PAYLOAD_1400B`
+
+Tests IPv6 GRE tunnel with large 1400-byte payload to verify MTU handling and bounds checking for IPv6 packets.
+
 ## Test Coverage Summary
 
-**Total Tests: 19**
+**Total Tests: 28** (19 IPv4 + 9 IPv6)
 
 **Protocol Coverage:**
+
+**IPv4 Tests:**
 - GRE IPv4 (basic, checksum, key, sequence, all flags, routing bit)
 - IPIP (IPv4-in-IPv4, including large payload)
 - Plain traffic (pass-through)
 
-**Note**: The current XDP program only supports:
-- GRE with **IPv4 inner packets** (IPv6 inner packets not supported)
-- IPIP protocol 4 (IPv4-in-IPv4 only, protocol 41 not supported)
+**IPv6 Tests:**
+- GRE with IPv6 outer headers (IPv4 inner, IPv6 inner, optional fields)
+- IPIP with IPv6 (IPv4-in-IPv6, IPv6-in-IPv4, IPv6-in-IPv6)
+- IPv6 whitelist enforcement
+- Mixed IPv4/IPv6 traffic
+- IPv6 large payload handling
+
+**Full Protocol Support:**
+- GRE with IPv4/IPv6 outer headers and IPv4/IPv6 inner packets
+- IPIP protocol 4 (IPv4-in-IPv4, IPv4-in-IPv6)
+- IPIP protocol 41 (IPv6-in-IPv4, IPv6-in-IPv6)
+- Separate whitelist maps for IPv4 and IPv6 source addresses
 
 **Security Testing:**
-- Whitelist enforcement (allowed and blocked sources)
-- Multiple source verification
+- IPv4 whitelist enforcement (allowed and blocked sources)
+- IPv6 whitelist enforcement (separate map)
+- Multiple source verification (IPv4 and IPv6)
+- Mixed IPv4/IPv6 whitelist validation
 
 **Robustness Testing:**
 - Invalid GRE version
 - Truncated packets
 - Malformed optional fields
-- Mixed traffic bursts
+- Mixed traffic bursts (IPv4 and IPv6)
 - High volume (100 packets)
 
 **Edge Cases:**
-- Large payloads (MTU testing)
+- Large payloads (MTU testing for IPv4 and IPv6)
 - All GRE flag combinations
 - Deprecated routing flag
 - Simultaneous tunnel and plain traffic
+- All IPv4/IPv6 outer/inner combinations
 
 ## Manual Testing
 
@@ -251,16 +328,25 @@ mount -t bpf bpf /sys/fs/bpf
 # Use -m native for physical interfaces (better performance, requires driver support)
 xdp-loader load -m skb eth0 /build/tun_decap.bpf.o -s xdp
 
-# Add whitelisted IP (10.200.0.20 = 0a c8 00 14)
+# Add whitelisted IPv4 address (10.200.0.20 = 0a c8 00 14)
 bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist \
     key hex 0a c8 00 14 \
+    value hex 01
+
+# Add whitelisted IPv6 address (fd00:db8:1::20)
+# IPv6: fd00:db8:1::20 = fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20
+bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+    key hex fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20 \
     value hex 01
 
 # Check program status
 xdp-loader status eth0
 
-# View whitelist
+# View IPv4 whitelist
 bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist
+
+# View IPv6 whitelist
+bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist_v6
 
 # View statistics
 bpftool map dump pinned /sys/fs/bpf/tun_decap_stats
@@ -323,20 +409,65 @@ python3 /usr/local/bin/generate-packets.py --type invalid-optional-fields
 # Mixed traffic burst
 python3 /usr/local/bin/generate-packets.py --type mixed-burst
 
-# All packet types
+# All packet types (IPv4)
 python3 /usr/local/bin/generate-packets.py --type all
+
+# IPv6 GRE with IPv4 inner
+python3 /usr/local/bin/generate-packets.py --type gre-ipv6-outer-ipv4-inner
+
+# IPv6 GRE with IPv6 inner
+python3 /usr/local/bin/generate-packets.py --type gre-ipv6-outer-ipv6-inner
+
+# IPv6 GRE with all optional fields
+python3 /usr/local/bin/generate-packets.py --type gre-ipv6-all-flags
+
+# IPv4-in-IPv6 (protocol 4)
+python3 /usr/local/bin/generate-packets.py --type ipip-ipv4-in-ipv6
+
+# IPv6-in-IPv4 (protocol 41)
+python3 /usr/local/bin/generate-packets.py --type ipip-ipv6-in-ipv4
+
+# IPv6-in-IPv6 (protocol 41)
+python3 /usr/local/bin/generate-packets.py --type ipip-ipv6-in-ipv6
+
+# IPv6 large payload
+python3 /usr/local/bin/generate-packets.py --type ipv6-large
+
+# Mixed IPv4/IPv6 traffic
+python3 /usr/local/bin/generate-packets.py --type mixed-ipv4-ipv6
+
+# All packet types (IPv4 and IPv6)
+python3 /usr/local/bin/generate-packets.py --type all-with-ipv6
 ```
 
 ### Custom Parameters
 
 ```bash
-# Send from specific source IP
+# Send IPv4 GRE from specific source IP
 python3 /usr/local/bin/generate-packets.py \
   --type gre-ipv4 \
   --src 10.200.0.30 \
   --dst 10.200.0.10 \
   --inner-src 203.0.113.100 \
   --inner-dst 203.0.113.1 \
+  --count 50
+
+# Send IPv6 GRE from specific source
+python3 /usr/local/bin/generate-packets.py \
+  --type gre-ipv6-outer-ipv4-inner \
+  --src fd00:db8:1::30 \
+  --dst fd00:db8:1::10 \
+  --inner-src 203.0.113.100 \
+  --inner-dst 203.0.113.1 \
+  --count 50
+
+# Send IPv6-in-IPv6 from specific source
+python3 /usr/local/bin/generate-packets.py \
+  --type ipip-ipv6-in-ipv6 \
+  --src fd00:db8:1::20 \
+  --dst fd00:db8:1::10 \
+  --inner-src 2001:db8:cafe::100 \
+  --inner-dst 2001:db8:cafe::1 \
   --count 50
 ```
 
@@ -371,19 +502,52 @@ docker exec xdp-target xdp-loader --help | head -1
 
 ### Packets Not Being Decapsulated
 
-- Check whitelist includes tunnel source IP (10.200.0.20 = 0a c8 00 14)
+**IPv4 Tunnels:**
+- Check IPv4 whitelist includes tunnel source IP (10.200.0.20 = 0a c8 00 14)
 - Verify rp_filter is disabled: `sysctl net.ipv4.conf.eth0.rp_filter`
+- Check IPv4 whitelist: `bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist`
+
+**IPv6 Tunnels:**
+- Check IPv6 whitelist includes tunnel source (fd00:db8:1::20)
+- Convert IPv6 address to hex format: fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20
+- Check IPv6 whitelist: `bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist_v6`
+
+**General Debugging:**
 - Use tcpdump to see if outer tunnel packets are arriving
 - Check XDP program is actually attached: `xdp-loader status eth0` or `ip link show eth0`
 - View statistics: `bpftool map dump pinned /sys/fs/bpf/tun_decap_stats`
-- Check whitelist: `bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist`
 
 ### Container Network Issues
 
+**IPv4 Connectivity:**
 - Ensure Docker network created: `docker network ls`
-- Check IP assignments: `docker exec xdp-target ip addr`
-- Verify routing: `docker exec xdp-target ip route`
-- Test basic connectivity: `docker exec tunnel-source ping 10.200.0.10`
+- Check IPv4 assignments: `docker exec xdp-target ip addr`
+- Verify IPv4 routing: `docker exec xdp-target ip route`
+- Test IPv4 connectivity: `docker exec tunnel-source ping 10.200.0.10`
+
+**IPv6 Connectivity:**
+- Check IPv6 assignments: `docker exec xdp-target ip -6 addr`
+- Verify IPv6 routing: `docker exec xdp-target ip -6 route`
+- Test IPv6 connectivity: `docker exec tunnel-source ping6 fd00:db8:1::10`
+- Ensure IPv6 is enabled: `docker exec xdp-target sysctl net.ipv6.conf.all.disable_ipv6`
+  (should be 0)
+
+### IPv6-Specific Issues
+
+**IPv6 packets not being decapsulated:**
+- Verify IPv6 whitelist is populated (separate from IPv4):
+  ```bash
+  bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist_v6
+  ```
+- Check IPv6 address format (16 bytes, network byte order)
+- Verify IPv6 is enabled in containers: `sysctl net.ipv6.conf.all.disable_ipv6`
+- Use tcpdump with IPv6 filter: `tcpdump -i eth0 -n ip6`
+- Check statistics for IPv6 counters (indices 3-6)
+
+**IPv6 address conversion issues:**
+- Use the Python helper script provided in the BPF Map Management section
+- Remember IPv6 addresses must be in network byte order (big-endian)
+- Double-check hex format has all 16 bytes (32 hex chars, 16 byte pairs)
 
 ### Tests Failing
 
@@ -456,11 +620,11 @@ The test suite uses multiple verification methods to ensure comprehensive valida
 
 ## BPF Map Management
 
-### Whitelist Map
+### IPv4 Whitelist Map
 
-The whitelist map stores allowed source IPs for tunnel decapsulation.
+The IPv4 whitelist map stores allowed IPv4 source addresses for tunnel decapsulation.
 
-**Add IP to whitelist:**
+**Add IPv4 address to whitelist:**
 ```bash
 # Example: Add 10.200.0.20 (hex: 0a c8 00 14)
 bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist \
@@ -468,15 +632,64 @@ bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist \
     value hex 01
 ```
 
-**Remove IP from whitelist:**
+**Remove IPv4 address from whitelist:**
 ```bash
 bpftool map delete pinned /sys/fs/bpf/tun_decap_whitelist \
     key hex 0a c8 00 14
 ```
 
-**List whitelisted IPs:**
+**List whitelisted IPv4 addresses:**
 ```bash
 bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist
+```
+
+### IPv6 Whitelist Map
+
+The IPv6 whitelist map stores allowed IPv6 source addresses for tunnel decapsulation (separate from IPv4 map).
+
+**Add IPv6 address to whitelist:**
+```bash
+# Example: Add fd00:db8:1::20
+# IPv6 addresses are stored as 16 bytes in network byte order
+# fd00:db8:1::20 = fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20
+bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+    key hex fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20 \
+    value hex 01
+
+# Example: Add 2001:db8::1
+# 2001:db8::1 = 20 01 0d b8 00 00 00 00 00 00 00 00 00 00 00 01
+bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+    key hex 20 01 0d b8 00 00 00 00 00 00 00 00 00 00 00 01 \
+    value hex 01
+
+# Example: Add fe80::1 (link-local)
+# fe80::1 = fe 80 00 00 00 00 00 00 00 00 00 00 00 00 00 01
+bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+    key hex fe 80 00 00 00 00 00 00 00 00 00 00 00 00 00 01 \
+    value hex 01
+```
+
+**Remove IPv6 address from whitelist:**
+```bash
+# Example: Remove fd00:db8:1::20
+bpftool map delete pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+    key hex fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20
+```
+
+**List whitelisted IPv6 addresses:**
+```bash
+bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist_v6
+```
+
+**Helper: Convert IPv6 to hex format:**
+```bash
+# Use Python to convert IPv6 address to hex
+python3 -c "import socket; import binascii; print(binascii.hexlify(socket.inet_pton(socket.AF_INET6, 'fd00:db8:1::20')).decode())"
+# Output: fd000db80001000000000000000000020
+
+# Format for bpftool (add spaces between bytes)
+python3 -c "import socket; import binascii; h=binascii.hexlify(socket.inet_pton(socket.AF_INET6, 'fd00:db8:1::20')).decode(); print(' '.join(h[i:i+2] for i in range(0, len(h), 2)))"
+# Output: fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20
 ```
 
 ### Statistics Map
@@ -491,11 +704,17 @@ Statistics indices:
 - 0: RX total (all packets)
 - 1: RX GRE packets
 - 2: RX IPIP packets
-- 3: Decapsulation success
-- 4: Decapsulation failed
-- 5: Dropped (not whitelisted)
-- 6: Dropped (malformed)
-- 7: Passed (non-tunnel)
+- 3: RX IPv6-in-IPv4 (protocol 41) packets
+- 4: RX IPv6 outer header packets
+- 5: RX GRE with IPv6 inner packets
+- 6: RX IPIP with IPv6 inner packets
+- 7: Decapsulation success
+- 8: Decapsulation failed
+- 9: Dropped (not whitelisted)
+- 10: Dropped (malformed)
+- 11: Passed (non-tunnel)
+
+**Note**: Statistics are per-CPU counters. To get total counts, sum values across all CPUs.
 
 ## Continuous Integration
 
@@ -517,8 +736,8 @@ cd tests
 
 ## Test Execution Time
 
-Expected test execution time: ~2-3 minutes for all 19 tests.
-- Container startup: ~10 seconds
+Expected test execution time: ~3-4 minutes for all 28 tests (19 IPv4 + 9 IPv6).
+- Container startup: ~10-15 seconds
 - XDP program attachment: ~5 seconds
-- Test execution: ~1.5-2 minutes
+- Test execution: ~2-3 minutes
 - Cleanup: ~5 seconds

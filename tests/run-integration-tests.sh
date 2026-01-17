@@ -13,6 +13,13 @@ TUNNEL_SOURCE_IP="10.200.0.20"
 UNTRUSTED_SOURCE_IP="10.200.0.30"
 INNER_CLIENT_IP="203.0.113.100"
 
+# IPv6 Configuration
+XDP_TARGET_IPV6="fd00:db8:1::10"
+TUNNEL_SOURCE_IPV6="fd00:db8:1::20"
+UNTRUSTED_SOURCE_IPV6="fd00:db8:1::30"
+INNER_CLIENT_IPV6="2001:db8:cafe::100"
+INNER_DEST_IPV6="2001:db8:cafe::1"
+
 # Colors for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -213,6 +220,7 @@ docker exec $XDP_TARGET sysctl -w net.ipv4.conf.eth0.rp_filter=0 > /dev/null
 
 # Add dummy interface for inner IPs so decapsulated packets can be received
 docker exec $XDP_TARGET ip addr add 203.0.113.1/24 dev lo > /dev/null 2>&1 || true
+docker exec $XDP_TARGET ip -6 addr add 2001:db8:cafe::1/64 dev lo > /dev/null 2>&1 || true
 
 # Remove any existing XDP program and clean up pinned maps
 docker exec $XDP_TARGET ip link set dev eth0 xdp off > /dev/null 2>&1 || true
@@ -238,14 +246,23 @@ sleep 2
 # NOTE: Config map defaults to all zeros (processing enabled)
 # No initialization needed - the default state enables all processing
 
-# Add whitelisted IP to the whitelist map using bpftool
+# Add whitelisted IPv4 address to the whitelist map using bpftool
 # The whitelist map expects: key=IPv4 (4 bytes in network byte order), value=struct whitelist_value (1 byte)
 # Convert 10.200.0.20 to hex: 0a c8 00 14
 docker exec $XDP_TARGET bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist \
     key hex 0a c8 00 14 \
     value hex 01
 
-echo "Whitelisted IP: $TUNNEL_SOURCE_IP (0a c8 00 14)"
+echo "Whitelisted IPv4: $TUNNEL_SOURCE_IP (0a c8 00 14)"
+
+# Add whitelisted IPv6 address to the IPv6 whitelist map
+# Convert fd00:db8:1::20 to hex (16 bytes in network byte order)
+# fd00:db8:1::20 = fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20
+docker exec $XDP_TARGET bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+    key hex fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20 \
+    value hex 01
+
+echo "Whitelisted IPv6: $TUNNEL_SOURCE_IPV6 (fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20)"
 
 sleep 1
 
@@ -256,9 +273,11 @@ if echo "$XDP_STATUS" | grep -q "xdp_tun_decap\|xdp\|ATTACHED"; then
     echo "  Program status:"
     echo "$XDP_STATUS" | head -10
 
-    # Verify whitelist map
-    echo "  Whitelist entries:"
+    # Verify whitelist maps
+    echo "  IPv4 Whitelist entries:"
     docker exec $XDP_TARGET bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist 2>&1 | head -5 || true
+    echo "  IPv6 Whitelist entries:"
+    docker exec $XDP_TARGET bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist_v6 2>&1 | head -5 || true
 elif docker exec $XDP_TARGET ip link show eth0 | grep -q "xdp"; then
     print_pass "XDP program attached successfully (fallback check)"
 else
@@ -658,6 +677,231 @@ else
         echo "  [DEBUG] Total packet count in capture:"
         docker exec $XDP_TARGET tcpdump -n -r $CAPTURE_FILE 2>&1 | wc -l
     fi
+fi
+
+print_section "Test 20: IPv6 Outer + GRE + IPv4 Inner"
+run_test
+print_test "Sending GRE packet with IPv6 outer header and IPv4 inner packet"
+
+start_capture ""
+
+docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type gre-ipv6-outer-ipv4-inner \
+    --src $TUNNEL_SOURCE_IPV6 \
+    --dst $XDP_TARGET_IPV6 \
+    --inner-src $INNER_CLIENT_IP \
+    --count 5
+
+sleep 2
+stop_capture
+
+if verify_inner_ip_visible "$INNER_CLIENT_IP" 5; then
+    if verify_decap_by_payload "TEST_GRE_IPV6_OUTER_IPV4_INNER" 5 "GRE IPv6 outer + IPv4 inner"; then
+        print_pass "GRE IPv6 outer + IPv4 inner decapsulated successfully"
+    else
+        print_fail "Inner IPs visible but payload verification failed"
+    fi
+else
+    print_fail "GRE IPv6 outer + IPv4 inner failed - inner IP not visible"
+fi
+
+print_section "Test 21: IPv6 Outer + GRE + IPv6 Inner"
+run_test
+print_test "Sending GRE packet with IPv6 outer header and IPv6 inner packet"
+
+start_capture ""
+
+docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type gre-ipv6-outer-ipv6-inner \
+    --src $TUNNEL_SOURCE_IPV6 \
+    --dst $XDP_TARGET_IPV6 \
+    --inner-src $INNER_CLIENT_IPV6 \
+    --count 5
+
+sleep 2
+stop_capture
+
+# For IPv6 inner packets, we can't easily verify inner IP visibility without ip6tables
+# So we'll rely primarily on payload marker verification
+if verify_decap_by_payload "TEST_GRE_IPV6_OUTER_IPV6_INNER" 5 "GRE IPv6 outer + IPv6 inner"; then
+    print_pass "GRE IPv6 outer + IPv6 inner decapsulated successfully"
+else
+    print_fail "GRE IPv6 outer + IPv6 inner failed - payload marker not found"
+fi
+
+print_section "Test 22: IPv6 GRE with Optional Fields"
+run_test
+print_test "Testing GRE packets with IPv6 outer and all optional fields"
+
+start_capture ""
+
+docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type gre-ipv6-all-flags \
+    --src $TUNNEL_SOURCE_IPV6 \
+    --dst $XDP_TARGET_IPV6 \
+    --inner-src $INNER_CLIENT_IP \
+    --count 5
+
+sleep 2
+stop_capture
+
+if verify_inner_ip_visible "$INNER_CLIENT_IP" 5; then
+    if verify_decap_by_payload "TEST_GRE_IPV6_ALL_FLAGS" 5 "GRE IPv6 with all optional fields"; then
+        print_pass "GRE IPv6 with all optional fields decapsulated successfully"
+    else
+        print_fail "Inner IPs visible but payload verification failed"
+    fi
+else
+    print_fail "GRE IPv6 with all optional fields failed - inner IP not visible"
+fi
+
+print_section "Test 23: IPv4-in-IPv6 (Protocol 4)"
+run_test
+print_test "Sending IPv4-in-IPv6 tunnel packets"
+
+start_capture ""
+
+docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type ipip-ipv4-in-ipv6 \
+    --src $TUNNEL_SOURCE_IPV6 \
+    --dst $XDP_TARGET_IPV6 \
+    --inner-src $INNER_CLIENT_IP \
+    --count 5
+
+sleep 2
+stop_capture
+
+if verify_inner_ip_visible "$INNER_CLIENT_IP" 5; then
+    if verify_decap_by_payload "TEST_IPIP_IPV4_IN_IPV6" 5 "IPv4-in-IPv6"; then
+        print_pass "IPv4-in-IPv6 packets decapsulated successfully"
+    else
+        print_fail "Inner IPs visible but payload verification failed"
+    fi
+else
+    print_fail "IPv4-in-IPv6 decapsulation failed - inner IP not visible"
+fi
+
+print_section "Test 24: IPv6-in-IPv4 (Protocol 41)"
+run_test
+print_test "Sending IPv6-in-IPv4 tunnel packets"
+
+start_capture ""
+
+docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type ipip-ipv6-in-ipv4 \
+    --src $TUNNEL_SOURCE_IP \
+    --dst $XDP_TARGET_IP \
+    --inner-src $INNER_CLIENT_IPV6 \
+    --count 5
+
+sleep 2
+stop_capture
+
+# Verify by payload marker (IPv6 inner IP verification not easily available)
+if verify_decap_by_payload "TEST_IPIP_IPV6_IN_IPV4" 5 "IPv6-in-IPv4"; then
+    print_pass "IPv6-in-IPv4 packets decapsulated successfully"
+else
+    print_fail "IPv6-in-IPv4 decapsulation failed - payload marker not found"
+fi
+
+print_section "Test 25: IPv6-in-IPv6 (Protocol 41)"
+run_test
+print_test "Sending IPv6-in-IPv6 tunnel packets"
+
+start_capture ""
+
+docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type ipip-ipv6-in-ipv6 \
+    --src $TUNNEL_SOURCE_IPV6 \
+    --dst $XDP_TARGET_IPV6 \
+    --inner-src $INNER_CLIENT_IPV6 \
+    --count 5
+
+sleep 2
+stop_capture
+
+if verify_decap_by_payload "TEST_IPIP_IPV6_IN_IPV6" 5 "IPv6-in-IPv6"; then
+    print_pass "IPv6-in-IPv6 packets decapsulated successfully"
+else
+    print_fail "IPv6-in-IPv6 decapsulation failed - payload marker not found"
+fi
+
+print_section "Test 26: IPv6 Non-Whitelisted Source (Should Drop)"
+run_test
+print_test "Sending IPv6 tunnel packets from non-whitelisted source"
+
+start_capture ""
+
+# Send GRE from untrusted IPv6 source - should be dropped
+docker exec $UNTRUSTED_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type gre-ipv6-outer-ipv4-inner \
+    --src $UNTRUSTED_SOURCE_IPV6 \
+    --dst $XDP_TARGET_IPV6 \
+    --inner-src $INNER_CLIENT_IP \
+    --count 5
+
+sleep 2
+stop_capture
+
+# Verify that the inner payload is NOT visible (packet was dropped, not decapsulated)
+if verify_not_decapsulated "TEST_GRE_IPV6_OUTER_IPV4_INNER"; then
+    print_pass "Non-whitelisted IPv6 tunnel traffic dropped successfully (payload not visible)"
+else
+    print_fail "Non-whitelisted IPv6 traffic was incorrectly decapsulated"
+fi
+
+print_section "Test 27: Mixed IPv4/IPv6 Tunnel Traffic"
+run_test
+print_test "Testing simultaneous IPv4 and IPv6 tunnel traffic"
+
+start_capture ""
+
+# Send mixed traffic
+docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type mixed-ipv4-ipv6 \
+    --src $TUNNEL_SOURCE_IP \
+    --dst $XDP_TARGET_IP \
+    --src-ipv6 $TUNNEL_SOURCE_IPV6 \
+    --dst-ipv6 $XDP_TARGET_IPV6 \
+    --inner-src $INNER_CLIENT_IP
+
+sleep 2
+stop_capture
+
+# Count different markers
+MARKER_IPV4=$(docker exec $XDP_TARGET tcpdump -A -r $CAPTURE_FILE 2>/dev/null | grep -o "TEST_MIXED_IPV4_GRE" | wc -l || echo 0)
+MARKER_IPV6=$(docker exec $XDP_TARGET tcpdump -A -r $CAPTURE_FILE 2>/dev/null | grep -o "TEST_MIXED_IPV6_GRE_IPV4" | wc -l || echo 0)
+
+if [ "$MARKER_IPV4" -ge 1 ] && [ "$MARKER_IPV6" -ge 1 ]; then
+    print_pass "Mixed IPv4/IPv6 traffic decapsulated successfully (IPv4: $MARKER_IPV4, IPv6: $MARKER_IPV6 markers)"
+else
+    print_fail "Mixed IPv4/IPv6 traffic failed (IPv4: $MARKER_IPV4, IPv6: $MARKER_IPV6 markers found)"
+fi
+
+print_section "Test 28: IPv6 Large Payload"
+run_test
+print_test "Testing IPv6 GRE packets with large payload"
+
+start_capture ""
+
+docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type ipv6-large \
+    --src $TUNNEL_SOURCE_IPV6 \
+    --dst $XDP_TARGET_IPV6 \
+    --inner-src $INNER_CLIENT_IP \
+    --count 3
+
+sleep 2
+stop_capture
+
+if verify_inner_ip_visible "$INNER_CLIENT_IP" 3; then
+    if verify_decap_by_payload "TEST_IPV6_LARGE_PAYLOAD_1400B" 3 "IPv6 GRE with large payload"; then
+        print_pass "IPv6 large payload packets decapsulated successfully"
+    else
+        print_fail "Inner IPs visible but payload verification failed"
+    fi
+else
+    print_fail "IPv6 large payload failed - inner IP not visible"
 fi
 
 print_section "Packet Capture Summary"

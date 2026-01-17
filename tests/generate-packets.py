@@ -9,7 +9,7 @@ the XDP tunnel decapsulation program.
 import sys
 import argparse
 from scapy.all import (
-    Ether, IP, UDP, GRE, TCP, ICMP, ARP,
+    Ether, IP, IPv6, UDP, GRE, TCP, ICMP, ICMPv6EchoRequest, ARP,
     sendp, Raw, conf, get_if_hwaddr, srp
 )
 
@@ -259,6 +259,169 @@ def send_invalid_gre_version(src_ip, dst_ip, inner_src, inner_dst, iface="eth0")
     sendp(packet, iface=iface, count=1, verbose=False)
 
 
+# ============== IPv6 Packet Generation Functions ==============
+
+def send_gre_ipv6_outer_ipv4_inner(src_ip, dst_ip, inner_src, inner_dst, iface="eth0", count=1):
+    """Send GRE packet with IPv6 outer header and IPv4 inner packet."""
+    dst_mac = get_mac_for_ip(dst_ip, iface)
+    src_mac = get_if_hwaddr(iface)
+
+    # IPv6 outer header with GRE (next header 47)
+    outer = IPv6(src=src_ip, dst=dst_ip, nh=47)
+    gre = GRE(proto=0x0800)  # IPv4 inner
+    payload = Raw(b"TEST_GRE_IPV6_OUTER_IPV4_INNER")
+    inner = IP(src=inner_src, dst=inner_dst) / ICMP(type=8, code=0) / payload
+
+    packet = Ether(src=src_mac, dst=dst_mac) / outer / gre / inner
+
+    print(f"Sending {count} GRE IPv6 outer + IPv4 inner packet(s): {src_ip} -> {dst_ip}")
+    print(f"  Payload marker: TEST_GRE_IPV6_OUTER_IPV4_INNER")
+    sendp(packet, iface=iface, count=count, verbose=False)
+
+
+def send_gre_ipv6_outer_ipv6_inner(src_ip, dst_ip, inner_src, inner_dst, iface="eth0", count=1):
+    """Send GRE packet with IPv6 outer header and IPv6 inner packet."""
+    dst_mac = get_mac_for_ip(dst_ip, iface)
+    src_mac = get_if_hwaddr(iface)
+
+    # IPv6 outer header with GRE (next header 47)
+    outer = IPv6(src=src_ip, dst=dst_ip, nh=47)
+    gre = GRE(proto=0x86DD)  # IPv6 inner (0x86DD)
+    payload = Raw(b"TEST_GRE_IPV6_OUTER_IPV6_INNER")
+    inner = IPv6(src=inner_src, dst=inner_dst) / ICMPv6EchoRequest() / payload
+
+    packet = Ether(src=src_mac, dst=dst_mac) / outer / gre / inner
+
+    print(f"Sending {count} GRE IPv6 outer + IPv6 inner packet(s): {src_ip} -> {dst_ip}")
+    print(f"  Payload marker: TEST_GRE_IPV6_OUTER_IPV6_INNER")
+    sendp(packet, iface=iface, count=count, verbose=False)
+
+
+def send_gre_ipv6_all_flags(src_ip, dst_ip, inner_src, inner_dst, iface="eth0", count=1):
+    """Send GRE packet with IPv6 outer and all optional fields."""
+    dst_mac = get_mac_for_ip(dst_ip, iface)
+    src_mac = get_if_hwaddr(iface)
+
+    # IPv6 outer header with GRE (next header 47)
+    outer = IPv6(src=src_ip, dst=dst_ip, nh=47)
+    gre = GRE(proto=0x0800, chksum_present=1, key_present=1, key=0xABCD1234,
+              seqnum_present=1, seqence_number=99)
+    payload = Raw(b"TEST_GRE_IPV6_ALL_FLAGS")
+    inner = IP(src=inner_src, dst=inner_dst) / UDP(dport=53, sport=12345) / payload
+
+    packet = Ether(src=src_mac, dst=dst_mac) / outer / gre / inner
+
+    print(f"Sending {count} GRE IPv6 outer with all flags packet(s): {src_ip} -> {dst_ip}")
+    print(f"  Payload marker: TEST_GRE_IPV6_ALL_FLAGS")
+    sendp(packet, iface=iface, count=count, verbose=False)
+
+
+def send_ipip_ipv4_in_ipv6(src_ip, dst_ip, inner_src, inner_dst, iface="eth0", count=1):
+    """Send IPv4-in-IPv6 tunnel packet (protocol 4)."""
+    dst_mac = get_mac_for_ip(dst_ip, iface)
+    src_mac = get_if_hwaddr(iface)
+
+    # IPv6 outer header with next header = 4 (IPv4)
+    outer = IPv6(src=src_ip, dst=dst_ip, nh=4)
+    payload = Raw(b"TEST_IPIP_IPV4_IN_IPV6")
+    inner = IP(src=inner_src, dst=inner_dst) / ICMP(type=8, code=0) / payload
+
+    packet = Ether(src=src_mac, dst=dst_mac) / outer / inner
+
+    print(f"Sending {count} IPv4-in-IPv6 packet(s): {src_ip} -> {dst_ip}")
+    print(f"  Payload marker: TEST_IPIP_IPV4_IN_IPV6")
+    sendp(packet, iface=iface, count=count, verbose=False)
+
+
+def send_ipip_ipv6_in_ipv4(src_ip, dst_ip, inner_src, inner_dst, iface="eth0", count=1):
+    """Send IPv6-in-IPv4 tunnel packet (protocol 41)."""
+    dst_mac = get_mac_for_ip(dst_ip, iface)
+    src_mac = get_if_hwaddr(iface)
+
+    # IPv4 outer header with protocol = 41 (IPv6)
+    outer = IP(src=src_ip, dst=dst_ip, proto=41)
+    payload = Raw(b"TEST_IPIP_IPV6_IN_IPV4")
+    inner = IPv6(src=inner_src, dst=inner_dst) / ICMPv6EchoRequest() / payload
+
+    packet = Ether(src=src_mac, dst=dst_mac) / outer / inner
+
+    print(f"Sending {count} IPv6-in-IPv4 packet(s): {src_ip} -> {dst_ip}")
+    print(f"  Payload marker: TEST_IPIP_IPV6_IN_IPV4")
+    sendp(packet, iface=iface, count=count, verbose=False)
+
+
+def send_ipip_ipv6_in_ipv6(src_ip, dst_ip, inner_src, inner_dst, iface="eth0", count=1):
+    """Send IPv6-in-IPv6 tunnel packet (protocol 41)."""
+    dst_mac = get_mac_for_ip(dst_ip, iface)
+    src_mac = get_if_hwaddr(iface)
+
+    # IPv6 outer header with next header = 41 (IPv6)
+    outer = IPv6(src=src_ip, dst=dst_ip, nh=41)
+    payload = Raw(b"TEST_IPIP_IPV6_IN_IPV6")
+    inner = IPv6(src=inner_src, dst=inner_dst) / ICMPv6EchoRequest() / payload
+
+    packet = Ether(src=src_mac, dst=dst_mac) / outer / inner
+
+    print(f"Sending {count} IPv6-in-IPv6 packet(s): {src_ip} -> {dst_ip}")
+    print(f"  Payload marker: TEST_IPIP_IPV6_IN_IPV6")
+    sendp(packet, iface=iface, count=count, verbose=False)
+
+
+def send_ipv6_large_payload(src_ip, dst_ip, inner_src, inner_dst, iface="eth0", count=1):
+    """Send IPv6 GRE packet with large payload."""
+    dst_mac = get_mac_for_ip(dst_ip, iface)
+    src_mac = get_if_hwaddr(iface)
+
+    # IPv6 outer header with GRE
+    outer = IPv6(src=src_ip, dst=dst_ip, nh=47)
+    gre = GRE(proto=0x0800)
+    # Create large payload with unique marker
+    marker = b"TEST_IPV6_LARGE_PAYLOAD_1400B:"
+    large_payload = marker + (b"Y" * (1400 - len(marker)))
+    inner = IP(src=inner_src, dst=inner_dst) / ICMP(type=8, code=0) / Raw(large_payload)
+
+    packet = Ether(src=src_mac, dst=dst_mac) / outer / gre / inner
+
+    print(f"Sending {count} IPv6 GRE packet(s) with large payload: {src_ip} -> {dst_ip}")
+    print(f"  Payload marker: TEST_IPV6_LARGE_PAYLOAD_1400B")
+    sendp(packet, iface=iface, count=count, verbose=False)
+
+
+def send_mixed_ipv4_ipv6_traffic(src_ipv4, dst_ipv4, src_ipv6, dst_ipv6, inner_src, inner_dst, iface="eth0"):
+    """Send burst of mixed IPv4 and IPv6 tunnel traffic."""
+    dst_mac = get_mac_for_ip(dst_ipv4, iface)
+    src_mac = get_if_hwaddr(iface)
+
+    packets = []
+
+    # IPv4 GRE
+    packets.append(Ether(src=src_mac, dst=dst_mac) / IP(src=src_ipv4, dst=dst_ipv4, proto=47) /
+                   GRE(proto=0x0800) / IP(src=inner_src, dst=inner_dst) /
+                   ICMP() / Raw(b"TEST_MIXED_IPV4_GRE"))
+
+    # IPv6 GRE with IPv4 inner
+    packets.append(Ether(src=src_mac, dst=dst_mac) / IPv6(src=src_ipv6, dst=dst_ipv6, nh=47) /
+                   GRE(proto=0x0800) / IP(src=inner_src, dst=inner_dst) /
+                   ICMP() / Raw(b"TEST_MIXED_IPV6_GRE_IPV4"))
+
+    # IPv4 IPIP
+    packets.append(Ether(src=src_mac, dst=dst_mac) / IP(src=src_ipv4, dst=dst_ipv4, proto=4) /
+                   IP(src=inner_src, dst=inner_dst) / ICMP() / Raw(b"TEST_MIXED_IPV4_IPIP"))
+
+    # IPv6-in-IPv4
+    packets.append(Ether(src=src_mac, dst=dst_mac) / IP(src=src_ipv4, dst=dst_ipv4, proto=41) /
+                   IPv6(src="2001:db8:cafe::100", dst="2001:db8:cafe::1") /
+                   ICMPv6EchoRequest() / Raw(b"TEST_MIXED_IPV6_IN_IPV4"))
+
+    # IPv6 GRE with IPv6 inner
+    packets.append(Ether(src=src_mac, dst=dst_mac) / IPv6(src=src_ipv6, dst=dst_ipv6, nh=47) /
+                   GRE(proto=0x86DD) / IPv6(src="2001:db8:cafe::100", dst="2001:db8:cafe::1") /
+                   ICMPv6EchoRequest() / Raw(b"TEST_MIXED_IPV6_GRE_IPV6"))
+
+    print(f"Sending burst of {len(packets)} mixed IPv4/IPv6 tunnel packets")
+    sendp(packets, iface=iface, verbose=False)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate test tunnel packets")
     parser.add_argument("--type", required=True,
@@ -266,14 +429,20 @@ def main():
                                "gre-ipv4-seq", "gre-ipv4-all-flags", "gre-ipv4-routing",
                                "ipip", "ipip-large",
                                "plain", "invalid-gre", "truncated-gre", "invalid-optional-fields",
-                               "mixed-burst", "all"],
+                               "mixed-burst",
+                               "gre-ipv6-outer-ipv4-inner", "gre-ipv6-outer-ipv6-inner",
+                               "gre-ipv6-all-flags", "ipip-ipv4-in-ipv6", "ipip-ipv6-in-ipv4",
+                               "ipip-ipv6-in-ipv6", "ipv6-large", "mixed-ipv4-ipv6",
+                               "all", "all-with-ipv6"],
                        help="Type of packet to send")
-    parser.add_argument("--src", default="10.200.0.20", help="Outer source IP")
-    parser.add_argument("--dst", default="10.200.0.10", help="Outer destination IP")
-    parser.add_argument("--inner-src", default="203.0.113.100", help="Inner source IP")
-    parser.add_argument("--inner-dst", default="203.0.113.1", help="Inner destination IP")
+    parser.add_argument("--src", default="10.200.0.20", help="Outer source IP (IPv4 or IPv6)")
+    parser.add_argument("--dst", default="10.200.0.10", help="Outer destination IP (IPv4 or IPv6)")
+    parser.add_argument("--inner-src", default="203.0.113.100", help="Inner source IP (IPv4 or IPv6)")
+    parser.add_argument("--inner-dst", default="203.0.113.1", help="Inner destination IP (IPv4 or IPv6)")
     parser.add_argument("--iface", default="eth0", help="Network interface")
     parser.add_argument("--count", type=int, default=1, help="Number of packets to send")
+    parser.add_argument("--src-ipv6", default="fd00:db8:1::20", help="Outer source IPv6 (for mixed traffic)")
+    parser.add_argument("--dst-ipv6", default="fd00:db8:1::10", help="Outer destination IPv6 (for mixed traffic)")
 
     args = parser.parse_args()
 
@@ -294,18 +463,44 @@ def main():
         "truncated-gre": lambda *a, **kw: send_truncated_gre_packet(args.src, args.dst, args.iface),
         "invalid-optional-fields": lambda *a, **kw: send_gre_with_invalid_optional_fields(args.src, args.dst, args.inner_src, args.inner_dst, args.iface),
         "mixed-burst": lambda *a, **kw: send_mixed_traffic_burst(args.src, args.dst, args.inner_src, args.inner_dst, args.iface),
+        "gre-ipv6-outer-ipv4-inner": send_gre_ipv6_outer_ipv4_inner,
+        "gre-ipv6-outer-ipv6-inner": send_gre_ipv6_outer_ipv6_inner,
+        "gre-ipv6-all-flags": send_gre_ipv6_all_flags,
+        "ipip-ipv4-in-ipv6": send_ipip_ipv4_in_ipv6,
+        "ipip-ipv6-in-ipv4": send_ipip_ipv6_in_ipv4,
+        "ipip-ipv6-in-ipv6": send_ipip_ipv6_in_ipv6,
+        "ipv6-large": send_ipv6_large_payload,
+        "mixed-ipv4-ipv6": lambda *a, **kw: send_mixed_ipv4_ipv6_traffic(args.src, args.dst, args.src_ipv6, args.dst_ipv6, args.inner_src, args.inner_dst, args.iface),
     }
 
     # Types that don't follow standard signature
-    special_types = ["plain", "invalid-gre", "truncated-gre", "invalid-optional-fields", "mixed-burst"]
+    special_types = ["plain", "invalid-gre", "truncated-gre", "invalid-optional-fields", "mixed-burst", "mixed-ipv4-ipv6"]
+
+    # IPv6 packet types that need IPv6 default addresses
+    ipv6_types = ["gre-ipv6-outer-ipv4-inner", "gre-ipv6-outer-ipv6-inner", "gre-ipv6-all-flags",
+                  "ipip-ipv4-in-ipv6", "ipip-ipv6-in-ipv6", "ipv6-large"]
 
     if args.type == "all":
-        print("Sending all packet types...")
+        print("Sending all IPv4 packet types...")
         for pkt_type, func in packet_types.items():
-            if pkt_type != "all":
+            if pkt_type not in ["all", "all-with-ipv6", "mixed-ipv4-ipv6"] and pkt_type not in ipv6_types:
                 try:
                     if pkt_type in special_types:
                         func()
+                    else:
+                        func(args.src, args.dst, args.inner_src, args.inner_dst, args.iface, args.count)
+                except Exception as e:
+                    print(f"Error sending {pkt_type}: {e}")
+    elif args.type == "all-with-ipv6":
+        print("Sending all packet types (IPv4 and IPv6)...")
+        for pkt_type, func in packet_types.items():
+            if pkt_type not in ["all", "all-with-ipv6"]:
+                try:
+                    if pkt_type in special_types:
+                        func()
+                    elif pkt_type in ipv6_types:
+                        # Use IPv6 addresses for IPv6 packet types
+                        func(args.src_ipv6, args.dst_ipv6, args.inner_src, args.inner_dst, args.iface, args.count)
                     else:
                         func(args.src, args.dst, args.inner_src, args.inner_dst, args.iface, args.count)
                 except Exception as e:
@@ -314,6 +509,11 @@ def main():
         func = packet_types[args.type]
         if args.type in special_types:
             func()
+        elif args.type in ipv6_types:
+            # Use IPv6 addresses for IPv6 packet types if not explicitly provided
+            src = args.src if ':' in args.src else args.src_ipv6
+            dst = args.dst if ':' in args.dst else args.dst_ipv6
+            func(src, dst, args.inner_src, args.inner_dst, args.iface, args.count)
         else:
             func(args.src, args.dst, args.inner_src, args.inner_dst, args.iface, args.count)
 

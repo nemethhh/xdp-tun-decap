@@ -1,0 +1,9 @@
+# XDP Tunnel Decapsulation Map Manager Dependencies
+
+# No external dependencies required
+# Uses Python standard library only:
+# - argparse (command-line parsing)
+# - ctypes (BPF syscalls)
+# - ipaddress (IP address validation)
+# - struct (binary data packing)
+# - os, sys, pathlib (system operations)

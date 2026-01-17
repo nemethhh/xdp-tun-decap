@@ -1,0 +1,86 @@
+services:
+  # Run all linters
+  lint:
+    build:
+      context: .
+      dockerfile: Dockerfile.lint
+    volumes:
+      - ./xdp_tun_decap_exporter.py:/app/xdp_tun_decap_exporter.py:ro
+    container_name: xdp-exporter-lint
+
+  # Individual linter services
+  flake8:
+    build:
+      context: .
+      dockerfile: Dockerfile.lint
+    volumes:
+      - ./xdp_tun_decap_exporter.py:/app/xdp_tun_decap_exporter.py:ro
+    command: >
+      sh -c "echo '=== flake8 ===' &&
+             flake8 xdp_tun_decap_exporter.py --max-line-length=100 --statistics &&
+             echo '✓ flake8 passed'"
+    container_name: xdp-exporter-flake8
+
+  pylint:
+    build:
+      context: .
+      dockerfile: Dockerfile.lint
+    volumes:
+      - ./xdp_tun_decap_exporter.py:/app/xdp_tun_decap_exporter.py:ro
+    command: >
+      sh -c "echo '=== pylint ===' &&
+             pylint xdp_tun_decap_exporter.py --max-line-length=100
+               --disable=C0103,R0913,R0914,R0915,W0703,E0401,W0201,R0903
+               --score=yes &&
+             echo '✓ pylint passed'"
+    container_name: xdp-exporter-pylint
+
+  black:
+    build:
+      context: .
+      dockerfile: Dockerfile.lint
+    volumes:
+      - ./xdp_tun_decap_exporter.py:/app/xdp_tun_decap_exporter.py:ro
+    command: >
+      sh -c "echo '=== black (check) ===' &&
+             black --check --line-length=100 xdp_tun_decap_exporter.py &&
+             echo '✓ black formatting check passed'"
+    container_name: xdp-exporter-black
+
+  isort:
+    build:
+      context: .
+      dockerfile: Dockerfile.lint
+    volumes:
+      - ./xdp_tun_decap_exporter.py:/app/xdp_tun_decap_exporter.py:ro
+    command: >
+      sh -c "echo '=== isort (check) ===' &&
+             isort --check-only --line-length=100 --profile=black xdp_tun_decap_exporter.py &&
+             echo '✓ isort import ordering check passed'"
+    container_name: xdp-exporter-isort
+
+  mypy:
+    build:
+      context: .
+      dockerfile: Dockerfile.lint
+    volumes:
+      - ./xdp_tun_decap_exporter.py:/app/xdp_tun_decap_exporter.py:ro
+    command: >
+      sh -c "echo '=== mypy ===' &&
+             mypy --ignore-missing-imports --no-strict-optional xdp_tun_decap_exporter.py &&
+             echo '✓ mypy type checking passed'"
+    container_name: xdp-exporter-mypy
+
+  # Auto-format code (use with caution)
+  format:
+    build:
+      context: .
+      dockerfile: Dockerfile.lint
+    volumes:
+      - ./xdp_tun_decap_exporter.py:/app/xdp_tun_decap_exporter.py:rw
+    command: >
+      sh -c "echo '=== Auto-formatting code ===' &&
+             isort --line-length=100 --profile=black xdp_tun_decap_exporter.py &&
+             black --line-length=100 xdp_tun_decap_exporter.py &&
+             echo '✓ Code formatted'"
+    container_name: xdp-exporter-format

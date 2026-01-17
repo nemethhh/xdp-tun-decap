@@ -185,53 +185,11 @@ The test suite uses `BPF_PROG_TEST_RUN` to verify:
 make test
 ```
 
-## Python Tools
-
-### Map Manager (`map_manager/`)
-
-Python tool for managing BPF maps (no external dependencies):
-
-```bash
-cd map_manager
-
-# Add IPs to whitelist (auto-detects IPv4/IPv6)
-sudo python3 xdp_tun_decap_manager.py whitelist-add 10.200.0.20
-sudo python3 xdp_tun_decap_manager.py whitelist-add 2001:db8::1
-
-# Runtime configuration
-sudo python3 xdp_tun_decap_manager.py config-disable-gre
-sudo python3 xdp_tun_decap_manager.py config-show
-
-# View statistics
-sudo python3 xdp_tun_decap_manager.py stats
-```
-
-See [map_manager/README.md](map_manager/README.md) for complete documentation.
-
-### Prometheus Exporter (`prometheus_exporter/`)
-
-Export XDP statistics as Prometheus metrics:
-
-```bash
-cd prometheus_exporter
-
-# Install dependencies
-pip3 install -r requirements.txt
-
-# Run exporter
-sudo python3 xdp_tun_decap_exporter.py --address 0.0.0.0 --port 9100
-
-# View metrics
-curl http://localhost:9100/metrics | grep xdp_tun_decap
-```
-
-See [prometheus_exporter/README.md](prometheus_exporter/README.md) for complete documentation.
-
 ## Project Structure
 
 ```
 xdp-tun-decap/
-├── src/                       # XDP BPF program source code
+├── src/
 │   ├── bpf/
 │   │   ├── vmlinux.h          # Generated kernel types (CO-RE)
 │   │   ├── tun_decap.bpf.c    # Main XDP program
@@ -242,20 +200,9 @@ xdp-tun-decap/
 │   └── test/
 │       ├── test_decap.c       # Unit tests
 │       └── test_packets.h     # Test packet data
-├── map_manager/               # BPF map management tool
-│   ├── xdp_tun_decap_manager.py
-│   ├── README.md
-│   └── QUICKSTART.md
-├── prometheus_exporter/       # Prometheus metrics exporter
-│   ├── xdp_tun_decap_exporter.py
-│   ├── README.md
-│   ├── QUICKSTART.md
-│   └── docker-compose.lint.yml  # Linting infrastructure
-├── tests/                     # Integration tests
 ├── build/                     # Build output
 ├── Makefile
-├── README.md                  # This file
-└── CLAUDE.md                  # Technical documentation
+└── README.md
 ```
 
 ## License

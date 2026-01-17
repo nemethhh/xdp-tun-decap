@@ -1,0 +1,30 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install linting tools
+RUN pip install --no-cache-dir \
+    flake8>=6.0.0 \
+    pylint>=3.0.0 \
+    black>=23.0.0 \
+    isort>=5.12.0 \
+    mypy>=1.5.0
+
+# Copy source code
+COPY xdp_tun_decap_exporter.py .
+
+# Default command runs all linters
+CMD ["sh", "-c", "echo '=== Running Linters ===' && \
+    echo '\n[1/5] flake8...' && \
+    flake8 xdp_tun_decap_exporter.py --max-line-length=100 --statistics && \
+    echo '\n[2/5] pylint...' && \
+    pylint xdp_tun_decap_exporter.py --max-line-length=100 \
+        --disable=C0103,R0913,R0914,R0915,W0703,E0401,W0201,R0903 \
+        --score=yes && \
+    echo '\n[3/5] black (check only)...' && \
+    black --check --line-length=100 xdp_tun_decap_exporter.py && \
+    echo '\n[4/5] isort (check only)...' && \
+    isort --check-only --line-length=100 --profile=black xdp_tun_decap_exporter.py && \
+    echo '\n[5/5] mypy...' && \
+    mypy --ignore-missing-imports --no-strict-optional xdp_tun_decap_exporter.py && \
+    echo '\n✓ All linter checks passed!'"]

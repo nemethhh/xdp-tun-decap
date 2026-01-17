@@ -1,0 +1,6 @@
+# XDP Tunnel Decapsulation Prometheus Exporter Dependencies
+
+# Prometheus client library for Python
+prometheus-client>=0.19.0
+
+# No other dependencies needed - uses stdlib ctypes for BPF access

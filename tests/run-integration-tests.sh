@@ -716,6 +716,7 @@ docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
     --src $TUNNEL_SOURCE_IPV6 \
     --dst $XDP_TARGET_IPV6 \
     --inner-src $INNER_CLIENT_IPV6 \
+    --inner-dst $INNER_DEST_IPV6 \
     --count 5
 
 sleep 2
@@ -792,6 +793,7 @@ docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
     --src $TUNNEL_SOURCE_IP \
     --dst $XDP_TARGET_IP \
     --inner-src $INNER_CLIENT_IPV6 \
+    --inner-dst $INNER_DEST_IPV6 \
     --count 5
 
 sleep 2
@@ -815,6 +817,7 @@ docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
     --src $TUNNEL_SOURCE_IPV6 \
     --dst $XDP_TARGET_IPV6 \
     --inner-src $INNER_CLIENT_IPV6 \
+    --inner-dst $INNER_DEST_IPV6 \
     --count 5
 
 sleep 2

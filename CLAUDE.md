@@ -111,8 +111,10 @@ Three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`):
    - Indices defined in `enum stat_idx` (src/include/tun_decap.h:26)
 
 3. **Config** (`BPF_MAP_TYPE_ARRAY`):
-   - Runtime enable/disable for processing and per-protocol control
-   - Fields: enabled, allow_gre, allow_ipip
+   - Runtime control to disable processing (processing is **enabled by default**)
+   - Uses inverted logic: zero-initialized map = all processing enabled
+   - Fields: `disabled`, `disable_gre`, `disable_ipip` (0=enabled, 1=disabled)
+   - No initialization required - works out of the box
 
 ### Helper Libraries
 
@@ -192,6 +194,26 @@ sudo bpftool map delete pinned /sys/fs/bpf/tun_decap_whitelist \
 
 # View whitelist
 sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist
+
+# Runtime configuration (processing is ENABLED by default, no init needed)
+# Disable all processing: set disabled=1
+sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
+    key hex 00 00 00 00 value hex 01 00 00 00
+
+# Disable only GRE: set disable_gre=1
+sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
+    key hex 00 00 00 00 value hex 00 01 00 00
+
+# Disable only IPIP: set disable_ipip=1
+sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
+    key hex 00 00 00 00 value hex 00 00 01 00
+
+# Re-enable everything: set all to 0
+sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
+    key hex 00 00 00 00 value hex 00 00 00 00
+
+# View current config
+sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_config
 
 # View statistics (per-CPU, userspace must aggregate)
 sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_stats

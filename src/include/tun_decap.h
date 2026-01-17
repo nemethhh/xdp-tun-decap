@@ -54,12 +54,15 @@ struct whitelist_value {
 
 /*
  * Configuration structure for runtime control
+ *
+ * NOTE: Fields are "disable" flags so that default zero-initialization
+ * means processing is ENABLED. Set to 1 to disable.
  */
 struct tun_decap_config {
-    __u8  enabled;      /* Master enable/disable switch */
-    __u8  allow_gre;    /* Process GRE tunnels (protocol 47) */
-    __u8  allow_ipip;   /* Process IPIP tunnels (protocol 4) */
-    __u8  _pad;         /* Alignment padding */
+    __u8  disabled;      /* Master disable switch (0=enabled, 1=disabled) */
+    __u8  disable_gre;   /* Disable GRE processing (0=enabled, 1=disabled) */
+    __u8  disable_ipip;  /* Disable IPIP processing (0=enabled, 1=disabled) */
+    __u8  _pad;          /* Alignment padding */
 };
 
 /*

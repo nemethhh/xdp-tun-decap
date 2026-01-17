@@ -222,10 +222,11 @@ docker exec $XDP_TARGET rm -f /sys/fs/bpf/tun_decap_* > /dev/null 2>&1 || true
 # Load XDP program using xdp-loader with skb mode
 # -m skb: Use generic SKB mode (compatible with all interfaces, including veth)
 # -s xdp: Section name in the BPF object
+# --pin-path: Directory where maps with LIBBPF_PIN_BY_NAME will be pinned
 # Note: Using skb mode because Docker uses veth interfaces
 # Requires xdp-tools 1.5.5+ for kernel 6.14+ support (PR #509)
 echo "Loading XDP program with xdp-loader..."
-if ! docker exec $XDP_TARGET xdp-loader load -m skb eth0 $XDP_OBJECT -s xdp 2>&1; then
+if ! docker exec $XDP_TARGET xdp-loader load -m skb --pin-path /sys/fs/bpf eth0 $XDP_OBJECT -s xdp 2>&1; then
     echo "XDP load failed. Checking xdp-tools version..."
     docker exec $XDP_TARGET xdp-loader --help 2>&1 | head -5
     print_fail "Failed to load XDP program - ensure xdp-tools >= 1.5.5 for kernel 6.14+"
@@ -233,6 +234,9 @@ if ! docker exec $XDP_TARGET xdp-loader load -m skb eth0 $XDP_OBJECT -s xdp 2>&1
 fi
 
 sleep 2
+
+# NOTE: Config map defaults to all zeros (processing enabled)
+# No initialization needed - the default state enables all processing
 
 # Add whitelisted IP to the whitelist map using bpftool
 # The whitelist map expects: key=IPv4 (4 bytes in network byte order), value=struct whitelist_value (1 byte)

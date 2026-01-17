@@ -188,7 +188,11 @@ int counter(struct xdp_md *ctx) {
 
 ### Pin maps for persistence and sharing
 
-Pinning maps to the BPF filesystem (`/sys/fs/bpf/`) enables sharing between programs and persistence across reloads:
+Pinning maps to the BPF filesystem (`/sys/fs/bpf/`) enables sharing between programs and persistence across reloads. **Understanding pinning is critical for production XDP deployments.**
+
+#### Automatic pinning with LIBBPF_PIN_BY_NAME
+
+The recommended approach is declarative auto-pinning in the map definition:
 
 ```c
 struct {
@@ -200,7 +204,98 @@ struct {
 } shared_config SEC(".maps");
 ```
 
-When a map with `LIBBPF_PIN_BY_NAME` is loaded and a pin already exists at the configured path, the loader reuses the existing map rather than creating a new one—enabling atomic program replacement while preserving state.
+**How auto-pinning works:**
+1. During `bpf_object__load()`, libbpf checks if a pin already exists at the target path
+2. If the pin exists and map attributes match, the existing map is **reused** (not recreated)
+3. If no pin exists, a new map is created and automatically pinned
+4. This enables seamless program reloads while preserving map state
+
+#### Using xdp-loader with pinned maps
+
+When loading XDP programs with xdp-loader, **you must specify `--pin-path`** for maps with `LIBBPF_PIN_BY_NAME` to work:
+
+```bash
+# CORRECT - specify pin path
+xdp-loader load -m native --pin-path /sys/fs/bpf eth0 prog.o
+
+# WRONG - maps won't be pinned despite LIBBPF_PIN_BY_NAME
+xdp-loader load -m native eth0 prog.o
+```
+
+The `--pin-path` option tells xdp-loader where to pin/look for maps. Without it, you'll get errors like:
+```
+Error: bpf obj get (/sys/fs/bpf/map_name): No such file or directory
+```
+
+**Map location:** Maps are pinned at `${pin_path}/${map_name}`. For example, with `--pin-path /sys/fs/bpf` and map name `stats_map`, the pin will be at `/sys/fs/bpf/stats_map`.
+
+#### Verifying the BPF filesystem is mounted
+
+The `/sys/fs/bpf` directory must have a bpffs filesystem mounted:
+
+```bash
+# Check if mounted
+mount | grep /sys/fs/bpf
+# Should show: bpffs on /sys/fs/bpf type bpf (rw,relatime)
+
+# If not mounted, mount it
+sudo mount -t bpf bpffs /sys/fs/bpf
+
+# Make persistent across reboots (add to /etc/fstab)
+echo "bpffs /sys/fs/bpf bpf defaults 0 0" | sudo tee -a /etc/fstab
+```
+
+**Common pitfall:** The directory `/sys/fs/bpf` may exist without being a bpffs mount point. Operations will fail with `ENOENT` if the filesystem isn't mounted.
+
+#### Manual pinning with bpf_object__pin_maps()
+
+For programmatic control, use explicit pinning after loading:
+
+```c
+struct bpf_object *obj = bpf_object__open_file("prog.o", NULL);
+bpf_object__load(obj);
+
+// Manually pin all maps
+bpf_object__pin_maps(obj, "/sys/fs/bpf/my_prog");
+
+// Or pin individual maps
+struct bpf_map *map = bpf_object__find_map_by_name(obj, "stats");
+bpf_map__pin(map, "/sys/fs/bpf/my_prog/stats");
+```
+
+#### Managing pinned maps with bpftool
+
+```bash
+# List all pinned objects
+ls -la /sys/fs/bpf/
+
+# View map contents
+bpftool map dump pinned /sys/fs/bpf/stats_map
+
+# Update map entry
+bpftool map update pinned /sys/fs/bpf/stats_map \
+    key hex 0a 00 00 00 \
+    value hex 64 00 00 00 00 00 00 00
+
+# Delete pinned map
+rm /sys/fs/bpf/stats_map
+```
+
+#### Map reuse across program versions
+
+When upgrading XDP programs, pinned maps enable state preservation:
+
+```bash
+# Version 1 running with pinned maps
+xdp-loader load --pin-path /sys/fs/bpf eth0 prog_v1.o
+
+# Upgrade to version 2 - maps are reused if definitions match
+xdp-loader unload eth0 --all
+xdp-loader load --pin-path /sys/fs/bpf eth0 prog_v2.o
+# Counters, state preserved!
+```
+
+**Map compatibility:** libbpf compares `type`, `key_size`, `value_size`, and `max_entries`. If any differ, the load fails with `-EINVAL` to prevent data corruption.
 
 **Map-in-map** (`BPF_MAP_TYPE_ARRAY_OF_MAPS`, `BPF_MAP_TYPE_HASH_OF_MAPS`) supports dynamic configuration by storing map references inside an outer map. BPF programs can lookup the outer map to get inner map pointers, while userspace can swap inner maps at runtime for A/B testing or per-tenant configuration.
 

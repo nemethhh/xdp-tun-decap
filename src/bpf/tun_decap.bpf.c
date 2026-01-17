@@ -353,10 +353,10 @@ int xdp_tun_decap(struct xdp_md *ctx)
     /* Update total packet counter */
     update_stat(STAT_RX_TOTAL);
 
-    /* Check if processing is enabled */
+    /* Check if processing is disabled */
     cfg = get_config();
-    if (cfg && !cfg->enabled) {
-        /* Processing disabled, pass to next program */
+    if (cfg && cfg->disabled) {
+        /* Processing explicitly disabled, pass to next program */
         return XDP_PASS;
     }
 
@@ -390,16 +390,16 @@ int xdp_tun_decap(struct xdp_md *ctx)
     /* Check for tunnel protocols */
     switch (iph->protocol) {
     case IPPROTO_GRE:
-        /* Check if GRE processing is enabled */
-        if (cfg && !cfg->allow_gre) {
+        /* Check if GRE processing is disabled */
+        if (cfg && cfg->disable_gre) {
             update_stat(STAT_PASS_NON_TUNNEL);
             return XDP_PASS;
         }
         return handle_gre(ctx, iph, ip_hdr_len, data_end);
 
     case IPPROTO_IPIP:
-        /* Check if IPIP processing is enabled */
-        if (cfg && !cfg->allow_ipip) {
+        /* Check if IPIP processing is disabled */
+        if (cfg && cfg->disable_ipip) {
             update_stat(STAT_PASS_NON_TUNNEL);
             return XDP_PASS;
         }

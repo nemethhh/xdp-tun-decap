@@ -54,13 +54,13 @@ USER_CFLAGS := -O2 -g -Wall -Wextra \
 
 USER_LDFLAGS := -lbpf -lelf -lz
 
-# Default target
+# Default target - just build the skeleton (which depends on everything else)
 .PHONY: all
-all: $(BUILD_DIR) vmlinux bpf skel
+all: $(BPF_SKEL)
 
 # Create build directory
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
+	@mkdir -p $(BUILD_DIR)
 
 # Generate vmlinux.h from running kernel's BTF
 # This provides all kernel type definitions for CO-RE
@@ -82,16 +82,16 @@ bpf: $(BPF_OBJ)
 
 $(BPF_OBJ): $(BPF_DIR)/tun_decap.bpf.c $(BPF_DIR)/gre.h $(BPF_DIR)/parsing.h $(INCLUDE_DIR)/tun_decap.h $(VMLINUX_H) | $(BUILD_DIR)
 	@echo "Compiling BPF program..."
-	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
+	@$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 	@echo "Generated $@"
 
 # Generate BPF skeleton header for userspace
 .PHONY: skel
 skel: $(BPF_SKEL)
 
-$(BPF_SKEL): $(BPF_OBJ)
+$(BPF_SKEL): $(BPF_OBJ) | $(BUILD_DIR)
 	@echo "Generating BPF skeleton..."
-	$(BPFTOOL) gen skeleton $< > $@
+	@$(BPFTOOL) gen skeleton $< > $@
 	@echo "Generated $@"
 
 # Build test binary

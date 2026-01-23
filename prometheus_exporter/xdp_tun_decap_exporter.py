@@ -50,11 +50,31 @@ METRIC_DEFINITIONS = [
     ("xdp_tun_decap_rx_total", "Total packets received", STAT_RX_TOTAL),
     ("xdp_tun_decap_rx_gre", "GRE tunnel packets received", STAT_RX_GRE),
     ("xdp_tun_decap_rx_ipip", "IPIP tunnel packets received", STAT_RX_IPIP),
-    ("xdp_tun_decap_rx_ipv6_in_ipv4", "IPv6-in-IPv4 tunnel packets received", STAT_RX_IPV6_IN_IPV4),
-    ("xdp_tun_decap_rx_ipv6_outer", "Packets with IPv6 outer header", STAT_RX_IPV6_OUTER),
-    ("xdp_tun_decap_rx_gre_ipv6_inner", "GRE with IPv6 inner packet", STAT_RX_GRE_IPV6_INNER),
-    ("xdp_tun_decap_rx_ipip_ipv6_inner", "IPIP with IPv6 inner packet", STAT_RX_IPIP_IPV6_INNER),
-    ("xdp_tun_decap_decap_success", "Packets successfully decapsulated", STAT_DECAP_SUCCESS),
+    (
+        "xdp_tun_decap_rx_ipv6_in_ipv4",
+        "IPv6-in-IPv4 tunnel packets received",
+        STAT_RX_IPV6_IN_IPV4,
+    ),
+    (
+        "xdp_tun_decap_rx_ipv6_outer",
+        "Packets with IPv6 outer header",
+        STAT_RX_IPV6_OUTER,
+    ),
+    (
+        "xdp_tun_decap_rx_gre_ipv6_inner",
+        "GRE with IPv6 inner packet",
+        STAT_RX_GRE_IPV6_INNER,
+    ),
+    (
+        "xdp_tun_decap_rx_ipip_ipv6_inner",
+        "IPIP with IPv6 inner packet",
+        STAT_RX_IPIP_IPV6_INNER,
+    ),
+    (
+        "xdp_tun_decap_decap_success",
+        "Packets successfully decapsulated",
+        STAT_DECAP_SUCCESS,
+    ),
     ("xdp_tun_decap_decap_failed", "Decapsulation failures", STAT_DECAP_FAILED),
     (
         "xdp_tun_decap_drop_not_whitelisted",
@@ -62,7 +82,11 @@ METRIC_DEFINITIONS = [
         STAT_DROP_NOT_WHITELISTED,
     ),
     ("xdp_tun_decap_drop_malformed", "Dropped (malformed packet)", STAT_DROP_MALFORMED),
-    ("xdp_tun_decap_pass_non_tunnel", "Non-tunnel traffic passed", STAT_PASS_NON_TUNNEL),
+    (
+        "xdp_tun_decap_pass_non_tunnel",
+        "Non-tunnel traffic passed",
+        STAT_PASS_NON_TUNNEL,
+    ),
 ]
 
 
@@ -161,12 +185,15 @@ class XDPTunDecapExporter:
         """Open the pinned BPF stats map."""
         if not Path(self.map_path).exists():
             raise FileNotFoundError(
-                f"BPF stats map not found at {self.map_path}. " "Is the XDP program loaded?"
+                f"BPF stats map not found at {self.map_path}. "
+                "Is the XDP program loaded?"
             )
 
         try:
             self.map_fd = self.bpf_reader.bpf_obj_get(self.map_path)
-            self.logger.info("Opened BPF stats map: %s (FD: %d)", self.map_path, self.map_fd)
+            self.logger.info(
+                "Opened BPF stats map: %s (FD: %d)", self.map_path, self.map_fd
+            )
         except Exception as e:
             raise RuntimeError(f"Failed to open BPF map: {e}") from e
 
@@ -216,16 +243,22 @@ class XDPTunDecapExporter:
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(description="Prometheus exporter for xdp-tun-decap statistics")
+    parser = argparse.ArgumentParser(
+        description="Prometheus exporter for xdp-tun-decap statistics"
+    )
     parser.add_argument(
         "-a",
         "--address",
         type=str,
-        default="0.0.0.0",
-        help="IP address to bind to (default: 0.0.0.0 - all interfaces)",
+        default="127.0.0.1",
+        help="IP address to bind to (default: 127.0.0.1 - localhost)",
     )
     parser.add_argument(
-        "-p", "--port", type=int, default=9100, help="Prometheus metrics HTTP port (default: 9100)"
+        "-p",
+        "--port",
+        type=int,
+        default=9100,
+        help="Prometheus metrics HTTP port (default: 9100)",
     )
     parser.add_argument(
         "-i",
@@ -240,7 +273,9 @@ def main():
         default=MAP_PIN_PATH_STATS,
         help=f"Path to pinned BPF stats map (default: {MAP_PIN_PATH_STATS})",
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable verbose logging"
+    )
     parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -270,8 +305,12 @@ def main():
 
         # Start Prometheus HTTP server
         start_http_server(args.port, addr=args.address)
-        logger.info("Prometheus metrics server started on %s:%d", args.address, args.port)
-        logger.info("Metrics available at http://%s:%d/metrics", args.address, args.port)
+        logger.info(
+            "Prometheus metrics server started on %s:%d", args.address, args.port
+        )
+        logger.info(
+            "Metrics available at http://%s:%d/metrics", args.address, args.port
+        )
 
         # Run update loop
         exporter.run(scrape_interval=args.interval)

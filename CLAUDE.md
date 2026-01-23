@@ -134,11 +134,12 @@ Three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`):
      - `drop_not_whitelisted`, `drop_malformed`: Drop reasons
      - `pass_non_tunnel`: Non-tunnel traffic passed through
    - Indices defined in `enum stat_idx` (src/include/tun_decap.h:26)
+   - Statistics collection is **enabled by default** but can be disabled via config map
 
 3. **Config** (`BPF_MAP_TYPE_ARRAY`):
    - Runtime control to disable processing (processing is **enabled by default**)
    - Uses inverted logic: zero-initialized map = all processing enabled
-   - Fields: `disabled`, `disable_gre`, `disable_ipip` (0=enabled, 1=disabled)
+   - Fields: `disabled`, `disable_gre`, `disable_ipip`, `disable_stats` (0=enabled, 1=disabled)
    - No initialization required - works out of the box
 
 ### Helper Libraries
@@ -254,6 +255,8 @@ sudo bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
     value hex 01
 
 # Runtime configuration (processing is ENABLED by default, no init needed)
+# Config structure: [disabled, disable_gre, disable_ipip, disable_stats]
+
 # Disable all processing: set disabled=1
 sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
     key hex 00 00 00 00 value hex 01 00 00 00
@@ -265,6 +268,10 @@ sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
 # Disable only IPIP: set disable_ipip=1
 sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
     key hex 00 00 00 00 value hex 00 00 01 00
+
+# Disable statistics collection: set disable_stats=1
+sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
+    key hex 00 00 00 00 value hex 00 00 00 01
 
 # Re-enable everything: set all to 0
 sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \

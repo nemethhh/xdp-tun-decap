@@ -1030,10 +1030,10 @@ int main(int argc, char **argv)
     {
         int cfg_fd = bpf_map__fd(skel->maps.tun_decap_config);
         struct tun_decap_config cfg = {
-            .disabled = 0,      /* Enable processing (0 = enabled) */
-            .disable_gre = 0,   /* Enable GRE (0 = enabled) */
-            .disable_ipip = 0,  /* Enable IPIP (0 = enabled) */
-            ._pad = 0
+            .disabled = 0,       /* Enable processing (0 = enabled) */
+            .disable_gre = 0,    /* Enable GRE (0 = enabled) */
+            .disable_ipip = 0,   /* Enable IPIP (0 = enabled) */
+            .disable_stats = 0   /* Enable statistics (0 = enabled) */
         };
         __u32 cfg_key = 0;
 

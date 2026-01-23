@@ -139,13 +139,33 @@ struct {
 } tun_decap_config SEC(".maps");
 
 /*
+ * Get runtime configuration
+ *
+ * @return: Pointer to config or NULL if not found
+ */
+static __always_inline struct tun_decap_config *get_config(void)
+{
+    __u32 key = 0;
+    return bpf_map_lookup_elem(&tun_decap_config, &key);
+}
+
+/*
  * Update statistics counter
  *
  * Per-CPU array requires no locking.
+ * Statistics collection can be disabled via config map.
  */
 static __always_inline void update_stat(__u32 idx)
 {
-    __u64 *count = bpf_map_lookup_elem(&tun_decap_stats, &idx);
+    struct tun_decap_config *cfg;
+    __u64 *count;
+
+    /* Check if statistics are disabled */
+    cfg = get_config();
+    if (cfg && cfg->disable_stats)
+        return;
+
+    count = bpf_map_lookup_elem(&tun_decap_stats, &idx);
     if (count)
         (*count)++;
 }
@@ -186,17 +206,6 @@ static __always_inline int is_whitelisted_v6(const struct in6_addr *ip6_addr)
 
     val = bpf_map_lookup_elem(&tun_decap_whitelist_v6, &key);
     return val != NULL;
-}
-
-/*
- * Get runtime configuration
- *
- * @return: Pointer to config or NULL if not found
- */
-static __always_inline struct tun_decap_config *get_config(void)
-{
-    __u32 key = 0;
-    return bpf_map_lookup_elem(&tun_decap_config, &key);
 }
 
 /*

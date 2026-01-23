@@ -259,7 +259,9 @@ class XDPTunDecapManager:
             return False
 
     # Configuration operations
-    def config_set(self, disabled=None, disable_gre=None, disable_ipip=None):
+    def config_set(
+        self, disabled=None, disable_gre=None, disable_ipip=None, disable_stats=None
+    ):
         """Update runtime configuration."""
         # Read current config
         map_fd = self._open_map(MAP_PIN_PATH_CONFIG)
@@ -267,18 +269,22 @@ class XDPTunDecapManager:
 
         current = self.bpf.map_lookup_elem(map_fd, key)
         if current:
-            current_disabled, current_gre, current_ipip, _ = struct.unpack(
-                "BBBB", current[:4]
-            )
+            (
+                current_disabled,
+                current_gre,
+                current_ipip,
+                current_stats,
+            ) = struct.unpack("BBBB", current[:4])
         else:
-            current_disabled = current_gre = current_ipip = 0
+            current_disabled = current_gre = current_ipip = current_stats = 0
 
         # Update values
         new_disabled = disabled if disabled is not None else current_disabled
         new_gre = disable_gre if disable_gre is not None else current_gre
         new_ipip = disable_ipip if disable_ipip is not None else current_ipip
+        new_stats = disable_stats if disable_stats is not None else current_stats
 
-        value = struct.pack("BBBB", new_disabled, new_gre, new_ipip, 0)
+        value = struct.pack("BBBB", new_disabled, new_gre, new_ipip, new_stats)
         self.bpf.map_update_elem(map_fd, key, value, BPF_ANY)
         os.close(map_fd)
 
@@ -286,6 +292,7 @@ class XDPTunDecapManager:
         print(f"  All processing:  {'DISABLED' if new_disabled else 'enabled'}")
         print(f"  GRE processing:  {'DISABLED' if new_gre else 'enabled'}")
         print(f"  IPIP processing: {'DISABLED' if new_ipip else 'enabled'}")
+        print(f"  Statistics:      {'DISABLED' if new_stats else 'enabled'}")
 
     def config_show(self):
         """Show current configuration."""
@@ -296,14 +303,17 @@ class XDPTunDecapManager:
         os.close(map_fd)
 
         if result:
-            disabled, disable_gre, disable_ipip, _ = struct.unpack("BBBB", result[:4])
+            disabled, disable_gre, disable_ipip, disable_stats = struct.unpack(
+                "BBBB", result[:4]
+            )
         else:
-            disabled = disable_gre = disable_ipip = 0
+            disabled = disable_gre = disable_ipip = disable_stats = 0
 
         print("Current configuration:")
         print(f"  All processing:  {'DISABLED' if disabled else 'enabled'}")
         print(f"  GRE processing:  {'DISABLED' if disable_gre else 'enabled'}")
         print(f"  IPIP processing: {'DISABLED' if disable_ipip else 'enabled'}")
+        print(f"  Statistics:      {'DISABLED' if disable_stats else 'enabled'}")
 
     # Statistics operations
     def stats_show(self):
@@ -350,6 +360,8 @@ Examples:
   %(prog)s config-enable-all
   %(prog)s config-disable-gre
   %(prog)s config-enable-gre
+  %(prog)s config-disable-stats
+  %(prog)s config-enable-stats
 
   # Statistics
   %(prog)s stats
@@ -382,6 +394,8 @@ Examples:
     subparsers.add_parser("config-enable-gre", help="Enable GRE processing")
     subparsers.add_parser("config-disable-ipip", help="Disable IPIP processing")
     subparsers.add_parser("config-enable-ipip", help="Enable IPIP processing")
+    subparsers.add_parser("config-disable-stats", help="Disable statistics collection")
+    subparsers.add_parser("config-enable-stats", help="Enable statistics collection")
 
     # Stats commands
     subparsers.add_parser("stats", help="Show statistics")
@@ -443,6 +457,12 @@ Examples:
 
         elif args.command == "config-enable-ipip":
             manager.config_set(disable_ipip=0)
+
+        elif args.command == "config-disable-stats":
+            manager.config_set(disable_stats=1)
+
+        elif args.command == "config-enable-stats":
+            manager.config_set(disable_stats=0)
 
         # Stats operations
         elif args.command == "stats":

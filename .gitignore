@@ -2,3 +2,18 @@ target
 build
 __pycache__
 .claude
+
+# GitHub Actions local testing (act)
+.act/
+act-*.log
+bin/
+
+# Release artifacts
+release/
+*.tar.gz
+*.sha256
+
+# Temporary files
+*.tmp
+*.swp
+*~

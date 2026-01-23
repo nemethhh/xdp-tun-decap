@@ -1,0 +1,19 @@
+# Clang-Format style for XDP BPF programs
+# Based on Linux kernel coding style with BPF-specific adjustments
+
+BasedOnStyle: LLVM
+IndentWidth: 8
+UseTab: ForIndentation
+TabWidth: 8
+BreakBeforeBraces: Linux
+AllowShortIfStatementsOnASingleLine: false
+IndentCaseLabels: false
+ColumnLimit: 100
+AlignTrailingComments: true
+SpacesBeforeTrailingComments: 1
+PointerAlignment: Right
+AlignConsecutiveMacros: true
+AlignConsecutiveAssignments: false
+AllowShortFunctionsOnASingleLine: None
+SortIncludes: true
+IncludeBlocks: Preserve

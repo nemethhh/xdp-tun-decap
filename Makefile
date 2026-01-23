@@ -148,25 +148,82 @@ clean:
 .PHONY: rebuild
 rebuild: clean all
 
+# Source files to format/lint (exclude generated files)
+SOURCE_FILES := $(shell find $(SRC_DIR) -name '*.c' -o -name '*.h' | grep -v vmlinux.h | grep -v tun_decap.skel.h)
+
+# Format code with clang-format
+.PHONY: format
+format:
+	@echo "Formatting code with clang-format..."
+	@clang-format -i $(SOURCE_FILES)
+	@echo "Formatting complete"
+
+# Check formatting without modifying files
+.PHONY: format-check
+format-check:
+	@echo "Checking code formatting..."
+	@clang-format --dry-run --Werror $(SOURCE_FILES) || \
+		(echo "Error: Code formatting issues found. Run 'make format' to fix."; exit 1)
+	@echo "Format check passed"
+
+# Run clang-tidy linter
+.PHONY: lint
+lint: $(VMLINUX_H)
+	@echo "Running clang-tidy linter..."
+	@for file in $(filter %.c,$(SOURCE_FILES)); do \
+		echo "Linting $$file..."; \
+		if echo "$$file" | grep -q "$(BPF_DIR)"; then \
+			clang-tidy $$file -- $(BPF_CFLAGS) || exit 1; \
+		else \
+			clang-tidy $$file -- $(USER_CFLAGS) || exit 1; \
+		fi; \
+	done
+	@echo "Linting complete"
+
+# Run clang-tidy with automatic fixes
+.PHONY: lint-fix
+lint-fix: $(VMLINUX_H)
+	@echo "Running clang-tidy with auto-fix..."
+	@for file in $(filter %.c,$(SOURCE_FILES)); do \
+		echo "Linting and fixing $$file..."; \
+		if echo "$$file" | grep -q "$(BPF_DIR)"; then \
+			clang-tidy --fix $$file -- $(BPF_CFLAGS) || exit 1; \
+		else \
+			clang-tidy --fix $$file -- $(USER_CFLAGS) || exit 1; \
+		fi; \
+	done
+	@echo "Linting and fixes complete"
+
+# Run both format and lint checks (for CI)
+.PHONY: check
+check: format-check lint
+	@echo "All checks passed"
+
 # Help
 .PHONY: help
 help:
 	@echo "XDP Tunnel Decapsulation Program Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all        - Build everything (default)"
-	@echo "  vmlinux    - Generate vmlinux.h from kernel BTF"
-	@echo "  bpf        - Compile BPF program"
-	@echo "  skel       - Generate BPF skeleton header"
-	@echo "  test-build - Build test binary"
-	@echo "  test       - Build and run tests (requires root)"
-	@echo "  verify     - Verify BPF program loads successfully"
-	@echo "  dump       - Show BPF program disassembly"
-	@echo "  btf        - Show BTF type information"
-	@echo "  clean      - Remove build artifacts"
-	@echo "  rebuild    - Clean and rebuild"
-	@echo "  help       - Show this help"
+	@echo "  all          - Build everything (default)"
+	@echo "  vmlinux      - Generate vmlinux.h from kernel BTF"
+	@echo "  bpf          - Compile BPF program"
+	@echo "  skel         - Generate BPF skeleton header"
+	@echo "  test-build   - Build test binary"
+	@echo "  test         - Build and run tests (requires root)"
+	@echo "  verify       - Verify BPF program loads successfully"
+	@echo "  dump         - Show BPF program disassembly"
+	@echo "  btf          - Show BTF type information"
+	@echo "  format       - Auto-format code with clang-format"
+	@echo "  format-check - Check code formatting without modifying"
+	@echo "  lint         - Run clang-tidy linter"
+	@echo "  lint-fix     - Run clang-tidy with automatic fixes"
+	@echo "  check        - Run format-check and lint (for CI)"
+	@echo "  clean        - Remove build artifacts"
+	@echo "  rebuild      - Clean and rebuild"
+	@echo "  help         - Show this help"
 	@echo ""
 	@echo "Requirements:"
 	@echo "  - Linux kernel 5.17+ with CONFIG_DEBUG_INFO_BTF=y"
 	@echo "  - clang, llvm, bpftool, libbpf-dev"
+	@echo "  - clang-format, clang-tidy (for linting and formatting)"

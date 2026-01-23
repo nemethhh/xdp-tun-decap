@@ -10,16 +10,16 @@
 #define __PARSING_H
 
 #include "vmlinux.h"
-#include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+#include <bpf/bpf_helpers.h>
 
 /*
  * Header cursor for tracking parsing position
  * This pattern simplifies multi-layer packet parsing
  */
 struct hdr_cursor {
-    void *pos;      /* Current parsing position */
-    void *end;      /* Packet end (data_end) */
+	void *pos; /* Current parsing position */
+	void *end; /* Packet end (data_end) */
 };
 
 /*
@@ -30,8 +30,8 @@ struct hdr_cursor {
  */
 static __always_inline void cursor_init(struct xdp_md *ctx, struct hdr_cursor *cursor)
 {
-    cursor->pos = (void *)(long)ctx->data;
-    cursor->end = (void *)(long)ctx->data_end;
+	cursor->pos = (void *)(long)ctx->data;
+	cursor->end = (void *)(long)ctx->data_end;
 }
 
 /*
@@ -43,7 +43,7 @@ static __always_inline void cursor_init(struct xdp_md *ctx, struct hdr_cursor *c
  */
 static __always_inline int cursor_check(struct hdr_cursor *cursor, int len)
 {
-    return cursor->pos + len <= cursor->end;
+	return cursor->pos + len <= cursor->end;
 }
 
 /*
@@ -54,7 +54,7 @@ static __always_inline int cursor_check(struct hdr_cursor *cursor, int len)
  */
 static __always_inline void cursor_advance(struct hdr_cursor *cursor, int len)
 {
-    cursor->pos += len;
+	cursor->pos += len;
 }
 
 /*
@@ -67,19 +67,18 @@ static __always_inline void cursor_advance(struct hdr_cursor *cursor, int len)
  * @eth: Pointer to store Ethernet header pointer
  * @return: Protocol type (ETH_P_*) or -1 on error
  */
-static __always_inline int parse_ethhdr(struct hdr_cursor *cursor,
-                                        struct ethhdr **eth)
+static __always_inline int parse_ethhdr(struct hdr_cursor *cursor, struct ethhdr **eth)
 {
-    struct ethhdr *hdr = cursor->pos;
+	struct ethhdr *hdr = cursor->pos;
 
-    /* Bounds check for Ethernet header */
-    if ((void *)(hdr + 1) > cursor->end)
-        return -1;
+	/* Bounds check for Ethernet header */
+	if ((void *)(hdr + 1) > cursor->end)
+		return -1;
 
-    *eth = hdr;
-    cursor_advance(cursor, sizeof(*hdr));
+	*eth = hdr;
+	cursor_advance(cursor, sizeof(*hdr));
 
-    return bpf_ntohs(hdr->h_proto);
+	return bpf_ntohs(hdr->h_proto);
 }
 
 /*
@@ -92,31 +91,30 @@ static __always_inline int parse_ethhdr(struct hdr_cursor *cursor,
  * @iph: Pointer to store IPv4 header pointer
  * @return: IP header length in bytes, or -1 on error
  */
-static __always_inline int parse_iphdr(struct hdr_cursor *cursor,
-                                       struct iphdr **iph)
+static __always_inline int parse_iphdr(struct hdr_cursor *cursor, struct iphdr **iph)
 {
-    struct iphdr *hdr = cursor->pos;
-    int hdr_len;
+	struct iphdr *hdr = cursor->pos;
+	int hdr_len;
 
-    /* Bounds check for minimum IP header */
-    if ((void *)(hdr + 1) > cursor->end)
-        return -1;
+	/* Bounds check for minimum IP header */
+	if ((void *)(hdr + 1) > cursor->end)
+		return -1;
 
-    /* Calculate actual IP header length from IHL field */
-    hdr_len = hdr->ihl * 4;
+	/* Calculate actual IP header length from IHL field */
+	hdr_len = hdr->ihl * 4;
 
-    /* Validate header length (minimum 20 bytes) */
-    if (hdr_len < (int)sizeof(*hdr))
-        return -1;
+	/* Validate header length (minimum 20 bytes) */
+	if (hdr_len < (int)sizeof(*hdr))
+		return -1;
 
-    /* Bounds check for full IP header including options */
-    if (cursor->pos + hdr_len > cursor->end)
-        return -1;
+	/* Bounds check for full IP header including options */
+	if (cursor->pos + hdr_len > cursor->end)
+		return -1;
 
-    *iph = hdr;
-    cursor_advance(cursor, hdr_len);
+	*iph = hdr;
+	cursor_advance(cursor, hdr_len);
 
-    return hdr_len;
+	return hdr_len;
 }
 
 /*
@@ -129,25 +127,24 @@ static __always_inline int parse_iphdr(struct hdr_cursor *cursor,
  * @iph: Pointer to store IPv4 header pointer
  * @return: IP header length in bytes, or -1 on error
  */
-static __always_inline int peek_iphdr(struct hdr_cursor *cursor,
-                                      struct iphdr **iph)
+static __always_inline int peek_iphdr(struct hdr_cursor *cursor, struct iphdr **iph)
 {
-    struct iphdr *hdr = cursor->pos;
-    int hdr_len;
+	struct iphdr *hdr = cursor->pos;
+	int hdr_len;
 
-    if ((void *)(hdr + 1) > cursor->end)
-        return -1;
+	if ((void *)(hdr + 1) > cursor->end)
+		return -1;
 
-    hdr_len = hdr->ihl * 4;
+	hdr_len = hdr->ihl * 4;
 
-    if (hdr_len < (int)sizeof(*hdr))
-        return -1;
+	if (hdr_len < (int)sizeof(*hdr))
+		return -1;
 
-    if (cursor->pos + hdr_len > cursor->end)
-        return -1;
+	if (cursor->pos + hdr_len > cursor->end)
+		return -1;
 
-    *iph = hdr;
-    return hdr_len;
+	*iph = hdr;
+	return hdr_len;
 }
 
 /*
@@ -161,23 +158,22 @@ static __always_inline int peek_iphdr(struct hdr_cursor *cursor,
  * @ip6h: Pointer to store IPv6 header pointer
  * @return: IPv6 header length (40) on success, or -1 on error
  */
-static __always_inline int parse_ipv6hdr(struct hdr_cursor *cursor,
-                                         struct ipv6hdr **ip6h)
+static __always_inline int parse_ipv6hdr(struct hdr_cursor *cursor, struct ipv6hdr **ip6h)
 {
-    struct ipv6hdr *hdr = cursor->pos;
+	struct ipv6hdr *hdr = cursor->pos;
 
-    /* Bounds check for IPv6 header (fixed 40 bytes) */
-    if ((void *)(hdr + 1) > cursor->end)
-        return -1;
+	/* Bounds check for IPv6 header (fixed 40 bytes) */
+	if ((void *)(hdr + 1) > cursor->end)
+		return -1;
 
-    /* Validate IPv6 version field */
-    if (hdr->version != 6)
-        return -1;
+	/* Validate IPv6 version field */
+	if (hdr->version != 6)
+		return -1;
 
-    *ip6h = hdr;
-    cursor_advance(cursor, sizeof(*hdr));
+	*ip6h = hdr;
+	cursor_advance(cursor, sizeof(*hdr));
 
-    return sizeof(*hdr);
+	return sizeof(*hdr);
 }
 
 /*
@@ -190,21 +186,20 @@ static __always_inline int parse_ipv6hdr(struct hdr_cursor *cursor,
  * @ip6h: Pointer to store IPv6 header pointer
  * @return: IPv6 header length (40) on success, or -1 on error
  */
-static __always_inline int peek_ipv6hdr(struct hdr_cursor *cursor,
-                                        struct ipv6hdr **ip6h)
+static __always_inline int peek_ipv6hdr(struct hdr_cursor *cursor, struct ipv6hdr **ip6h)
 {
-    struct ipv6hdr *hdr = cursor->pos;
+	struct ipv6hdr *hdr = cursor->pos;
 
-    /* Bounds check for IPv6 header */
-    if ((void *)(hdr + 1) > cursor->end)
-        return -1;
+	/* Bounds check for IPv6 header */
+	if ((void *)(hdr + 1) > cursor->end)
+		return -1;
 
-    /* Validate IPv6 version field */
-    if (hdr->version != 6)
-        return -1;
+	/* Validate IPv6 version field */
+	if (hdr->version != 6)
+		return -1;
 
-    *ip6h = hdr;
-    return sizeof(*hdr);
+	*ip6h = hdr;
+	return sizeof(*hdr);
 }
 
 /*
@@ -220,7 +215,7 @@ static __always_inline int peek_ipv6hdr(struct hdr_cursor *cursor,
  */
 static __always_inline int ptr_is_valid(void *ptr, int size, void *end)
 {
-    return (ptr + size <= end);
+	return (ptr + size <= end);
 }
 
 /*
@@ -235,15 +230,14 @@ static __always_inline int ptr_is_valid(void *ptr, int size, void *end)
  * @size: Size of the type to access
  * @return: Pointer to data or NULL if out of bounds
  */
-static __always_inline void *ptr_at(void *data, void *data_end,
-                                    __u32 offset, __u32 size)
+static __always_inline void *ptr_at(void *data, void *data_end, __u32 offset, __u32 size)
 {
-    void *ptr = data + offset;
+	void *ptr = data + offset;
 
-    if (ptr + size > data_end)
-        return NULL;
+	if (ptr + size > data_end)
+		return NULL;
 
-    return ptr;
+	return ptr;
 }
 
 /*
@@ -254,9 +248,9 @@ static __always_inline void *ptr_at(void *data, void *data_end,
  */
 static __always_inline __u32 cursor_remaining(struct hdr_cursor *cursor)
 {
-    if (cursor->pos >= cursor->end)
-        return 0;
-    return cursor->end - cursor->pos;
+	if (cursor->pos >= cursor->end)
+		return 0;
+	return cursor->end - cursor->pos;
 }
 
 /*
@@ -269,11 +263,10 @@ static __always_inline __u32 cursor_remaining(struct hdr_cursor *cursor)
  * @ctx: XDP context (with updated data/data_end)
  * @cursor: Cursor to reinitialize
  */
-static __always_inline void cursor_reinit(struct xdp_md *ctx,
-                                          struct hdr_cursor *cursor)
+static __always_inline void cursor_reinit(struct xdp_md *ctx, struct hdr_cursor *cursor)
 {
-    cursor->pos = (void *)(long)ctx->data;
-    cursor->end = (void *)(long)ctx->data_end;
+	cursor->pos = (void *)(long)ctx->data;
+	cursor->end = (void *)(long)ctx->data_end;
 }
 
 #endif /* __PARSING_H */

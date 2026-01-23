@@ -66,6 +66,7 @@ sudo python3 xdp_tun_decap_manager.py config-show
 #   All processing:  enabled
 #   GRE processing:  enabled
 #   IPIP processing: enabled
+#   Statistics:      enabled
 ```
 
 **Disable all processing:**
@@ -75,6 +76,7 @@ sudo python3 xdp_tun_decap_manager.py config-disable-all
 #   All processing:  DISABLED
 #   GRE processing:  enabled
 #   IPIP processing: enabled
+#   Statistics:      enabled
 ```
 
 **Enable all processing:**
@@ -84,6 +86,7 @@ sudo python3 xdp_tun_decap_manager.py config-enable-all
 #   All processing:  enabled
 #   GRE processing:  enabled
 #   IPIP processing: enabled
+#   Statistics:      enabled
 ```
 
 **Disable only GRE:**
@@ -93,6 +96,7 @@ sudo python3 xdp_tun_decap_manager.py config-disable-gre
 #   All processing:  enabled
 #   GRE processing:  DISABLED
 #   IPIP processing: enabled
+#   Statistics:      enabled
 ```
 
 **Enable GRE:**
@@ -108,6 +112,26 @@ sudo python3 xdp_tun_decap_manager.py config-disable-ipip
 **Enable IPIP:**
 ```bash
 sudo python3 xdp_tun_decap_manager.py config-enable-ipip
+```
+
+**Disable statistics collection:**
+```bash
+sudo python3 xdp_tun_decap_manager.py config-disable-stats
+# ✓ Configuration updated:
+#   All processing:  enabled
+#   GRE processing:  enabled
+#   IPIP processing: enabled
+#   Statistics:      DISABLED
+```
+
+**Enable statistics collection:**
+```bash
+sudo python3 xdp_tun_decap_manager.py config-enable-stats
+# ✓ Configuration updated:
+#   All processing:  enabled
+#   GRE processing:  enabled
+#   IPIP processing: enabled
+#   Statistics:      enabled
 ```
 
 ### Statistics
@@ -131,6 +155,11 @@ sudo python3 xdp_tun_decap_manager.py stats
 #   pass_non_tunnel          :          50,000
 ```
 
+**Note**: Statistics collection is enabled by default. You can disable it to reduce overhead in high-throughput environments where monitoring is handled externally:
+```bash
+sudo python3 xdp_tun_decap_manager.py config-disable-stats
+```
+
 ## Command Reference
 
 ```bash
@@ -147,6 +176,8 @@ config-disable-gre        Disable GRE processing only
 config-enable-gre         Enable GRE processing
 config-disable-ipip       Disable IPIP processing only
 config-enable-ipip        Enable IPIP processing
+config-disable-stats      Disable statistics collection
+config-enable-stats       Enable statistics collection
 
 # Statistics
 stats                     Show aggregated statistics
@@ -233,7 +264,7 @@ sudo python3 xdp_tun_decap_manager.py config-show
 
 ### Configuration
 - **Key**: 4 bytes (index 0)
-- **Value**: 4 bytes (disabled, disable_gre, disable_ipip, padding)
+- **Value**: 4 bytes (disabled, disable_gre, disable_ipip, disable_stats)
 - **Type**: Array map
 - **Note**: 0 = enabled, 1 = disabled
 

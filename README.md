@@ -9,7 +9,7 @@ High-performance XDP program for decapsulating GRE and IPIP tunnel traffic with 
 - **libxdp multi-program support** - Works alongside other XDP programs
 - **Per-CPU whitelist** - Lock-free O(1) lookups
 - **CO-RE support** - Compile Once, Run Everywhere portability
-- **Comprehensive statistics** - Per-CPU counters for monitoring
+- **Comprehensive statistics** - Per-CPU counters for monitoring (configurable at runtime)
 
 ## Requirements
 
@@ -200,6 +200,7 @@ sudo python3 xdp_tun_decap_manager.py whitelist-add 2001:db8::1
 
 # Runtime configuration
 sudo python3 xdp_tun_decap_manager.py config-disable-gre
+sudo python3 xdp_tun_decap_manager.py config-disable-stats  # Disable statistics for performance
 sudo python3 xdp_tun_decap_manager.py config-show
 
 # View statistics

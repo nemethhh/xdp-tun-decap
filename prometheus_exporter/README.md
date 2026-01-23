@@ -11,6 +11,8 @@ A lightweight Python-based Prometheus exporter that reads statistics from the xd
 - **Configurable binding**: Bind to specific IP address and port
 - **Comprehensive coverage**: All 12 statistics from xdp-tun-decap
 
+> **Note**: Statistics collection in the XDP program is enabled by default. It can be disabled via the config map for performance optimization (see map_manager documentation).
+
 ## Metrics Exposed
 
 All metrics are prefixed with `xdp_tun_decap_`:
@@ -177,7 +179,12 @@ sudo python3 xdp_tun_decap_manager.py whitelist-check 10.200.0.20
 
 # Runtime configuration
 sudo python3 xdp_tun_decap_manager.py config-disable-gre
-sudo python3 xdp_tun_decap_manager.py stats
+sudo python3 xdp_tun_decap_manager.py config-show
+
+# Statistics control
+sudo python3 xdp_tun_decap_manager.py config-disable-stats  # Disable for performance
+sudo python3 xdp_tun_decap_manager.py config-enable-stats   # Re-enable for monitoring
+sudo python3 xdp_tun_decap_manager.py stats                 # View current stats
 ```
 
 See [../map_manager/README.md](../map_manager/README.md) for complete documentation.
@@ -278,6 +285,8 @@ sum without (instance, job) (
 - Check: `sudo netstat -tlnp | grep 9100`
 
 ### No metrics updating
+- Check if statistics collection is enabled: `sudo python3 ../map_manager/xdp_tun_decap_manager.py config-show`
+- If statistics are disabled, enable them: `sudo python3 ../map_manager/xdp_tun_decap_manager.py config-enable-stats`
 - Check XDP program receiving traffic: `sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_stats`
 - Verify interface has XDP program loaded
 - Check exporter logs: `--verbose`

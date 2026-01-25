@@ -20,6 +20,12 @@ BPF_OBJ := $(BUILD_DIR)/tun_decap.bpf.o
 BPF_SKEL := $(BUILD_DIR)/tun_decap.skel.h
 TEST_BIN := $(BUILD_DIR)/test_decap
 
+# Helper test binaries (run in userspace, no root required)
+TEST_PARSING_BIN := $(BUILD_DIR)/test_parsing_helpers
+TEST_GRE_BIN := $(BUILD_DIR)/test_gre_helpers
+TEST_IPV6_BIN := $(BUILD_DIR)/test_ipv6_helpers
+HELPER_TEST_BINS := $(TEST_PARSING_BIN) $(TEST_GRE_BIN) $(TEST_IPV6_BIN)
+
 # Detect architecture
 ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
 
@@ -103,12 +109,44 @@ $(TEST_BIN): $(TEST_DIR)/test_decap.c $(TEST_DIR)/test_packets.h $(BPF_SKEL) | $
 	$(CC) $(USER_CFLAGS) $< -o $@ $(USER_LDFLAGS)
 	@echo "Generated $@"
 
-# Run unit tests (requires root for BPF operations)
+# Build helper test binaries (userspace only, no BPF dependencies)
+# These tests don't require root permissions or BPF loading
+.PHONY: test-helpers-build
+test-helpers-build: $(HELPER_TEST_BINS)
+
+$(TEST_PARSING_BIN): $(TEST_DIR)/test_parsing_helpers.c $(INCLUDE_DIR)/tun_decap.h | $(BUILD_DIR)
+	@echo "Building parsing helpers test..."
+	$(CC) $(USER_CFLAGS) $< -o $@
+	@echo "Generated $@"
+
+$(TEST_GRE_BIN): $(TEST_DIR)/test_gre_helpers.c $(INCLUDE_DIR)/tun_decap.h | $(BUILD_DIR)
+	@echo "Building GRE helpers test..."
+	$(CC) $(USER_CFLAGS) $< -o $@
+	@echo "Generated $@"
+
+$(TEST_IPV6_BIN): $(TEST_DIR)/test_ipv6_helpers.c $(INCLUDE_DIR)/tun_decap.h | $(BUILD_DIR)
+	@echo "Building IPv6 helpers test..."
+	$(CC) $(USER_CFLAGS) $< -o $@
+	@echo "Generated $@"
+
+# Run helper tests (userspace only, NO root required)
+# These tests validate pure C helper functions without BPF loading
+.PHONY: test-helpers
+test-helpers: $(HELPER_TEST_BINS)
+	@echo "=== Running Helper Tests (no root required) ==="
+	@echo ""
+	@$(TEST_PARSING_BIN)
+	@$(TEST_GRE_BIN)
+	@$(TEST_IPV6_BIN)
+	@echo ""
+	@echo "=== All helper tests completed ==="
+
+# Run BPF unit tests (requires root for BPF operations)
 # Note: Unit tests use BPF_PROG_TEST_RUN which requires CAP_BPF and CAP_SYS_ADMIN
 # For comprehensive testing, also run integration tests: cd tests && ./run-tests.sh
-.PHONY: test
-test: $(TEST_BIN)
-	@echo "Running unit tests..."
+.PHONY: test-bpf
+test-bpf: $(TEST_BIN)
+	@echo "Running BPF unit tests..."
 	@echo "Note: These tests require loading BPF programs (CAP_BPF, CAP_SYS_ADMIN)"
 	@echo "For comprehensive testing, run: cd tests && ./run-tests.sh"
 	@echo ""
@@ -119,6 +157,12 @@ test: $(TEST_BIN)
 		$(TEST_BIN); \
 	fi
 
+# Run all unit tests (helpers + BPF)
+.PHONY: test
+test: test-helpers test-bpf
+	@echo ""
+	@echo "=== All unit tests completed ==="
+
 # Run integration tests (comprehensive Docker-based testing)
 # These tests use Docker containers with proper BPF capabilities
 # and test real packet decapsulation with tcpdump verification
@@ -128,11 +172,11 @@ integration-test: all
 	@echo "This will test actual packet decapsulation on a network interface"
 	@cd tests && ./run-tests.sh
 
-# Run all tests (unit + integration)
+# Run all tests (helper tests + BPF tests + integration tests)
 .PHONY: test-all
 test-all: test integration-test
 	@echo ""
-	@echo "=== All tests completed ==="
+	@echo "=== All tests completed (helpers + BPF + integration) ==="
 
 # Verify BPF program loads successfully
 .PHONY: verify
@@ -224,24 +268,33 @@ check: format-check lint
 help:
 	@echo "XDP Tunnel Decapsulation Program Build System"
 	@echo ""
-	@echo "Targets:"
-	@echo "  all          - Build everything (default)"
-	@echo "  vmlinux      - Generate vmlinux.h from kernel BTF"
-	@echo "  bpf          - Compile BPF program"
-	@echo "  skel         - Generate BPF skeleton header"
-	@echo "  test-build   - Build test binary"
-	@echo "  test         - Build and run tests (requires root)"
-	@echo "  verify       - Verify BPF program loads successfully"
-	@echo "  dump         - Show BPF program disassembly"
-	@echo "  btf          - Show BTF type information"
-	@echo "  format       - Auto-format code with clang-format"
-	@echo "  format-check - Check code formatting without modifying"
-	@echo "  lint         - Run clang-tidy linter"
-	@echo "  lint-fix     - Run clang-tidy with automatic fixes"
-	@echo "  check        - Run format-check and lint (for CI)"
-	@echo "  clean        - Remove build artifacts"
-	@echo "  rebuild      - Clean and rebuild"
-	@echo "  help         - Show this help"
+	@echo "Build Targets:"
+	@echo "  all               - Build everything (default)"
+	@echo "  vmlinux           - Generate vmlinux.h from kernel BTF"
+	@echo "  bpf               - Compile BPF program"
+	@echo "  skel              - Generate BPF skeleton header"
+	@echo "  test-build        - Build BPF test binary"
+	@echo "  test-helpers-build- Build helper test binaries (no BPF)"
+	@echo ""
+	@echo "Test Targets:"
+	@echo "  test-helpers      - Run helper tests (NO root required)"
+	@echo "  test-bpf          - Run BPF tests (requires root)"
+	@echo "  test              - Run all unit tests (helpers + BPF)"
+	@echo "  integration-test  - Run Docker-based integration tests"
+	@echo "  test-all          - Run all tests (unit + integration)"
+	@echo ""
+	@echo "Development Targets:"
+	@echo "  verify            - Verify BPF program loads successfully"
+	@echo "  dump              - Show BPF program disassembly"
+	@echo "  btf               - Show BTF type information"
+	@echo "  format            - Auto-format code with clang-format"
+	@echo "  format-check      - Check code formatting without modifying"
+	@echo "  lint              - Run clang-tidy linter"
+	@echo "  lint-fix          - Run clang-tidy with automatic fixes"
+	@echo "  check             - Run format-check and lint (for CI)"
+	@echo "  clean             - Remove build artifacts"
+	@echo "  rebuild           - Clean and rebuild"
+	@echo "  help              - Show this help"
 	@echo ""
 	@echo "Requirements:"
 	@echo "  - Linux kernel 5.17+ with CONFIG_DEBUG_INFO_BTF=y"

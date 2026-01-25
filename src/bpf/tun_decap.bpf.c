@@ -236,6 +236,7 @@ static __always_inline int decapsulate(struct xdp_md *ctx, int decap_len, __u16 
 	}
 
 	/* Save original Ethernet header to stack */
+	// NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
 	__builtin_memcpy(&eth_copy, eth, sizeof(eth_copy));
 
 	/*
@@ -263,6 +264,7 @@ static __always_inline int decapsulate(struct xdp_md *ctx, int decap_len, __u16 
 	}
 
 	/* Restore Ethernet header at new position */
+	// NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
 	__builtin_memcpy(eth, &eth_copy, sizeof(*eth));
 
 	/* Update EtherType to reflect inner protocol (IPv4 or IPv6) */

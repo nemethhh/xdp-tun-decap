@@ -34,14 +34,19 @@ sudo apt install clang llvm linux-tools-generic libbpf-dev libxdp-dev
 ## Building
 
 ```bash
-# Build everything
+# Build everything (BPF program + skeleton)
 make all
 
-# Run tests (requires root)
-make test
+# Build and run tests
+make test-helpers          # Helper tests (no root required)
+make test                  # All unit tests (requires root)
+make test-all              # Unit + integration tests
 
 # Verify program loads correctly
 sudo make verify
+
+# Show all available targets
+make help
 ```
 
 ## Usage
@@ -170,19 +175,100 @@ xdp-loader load -m native eth0 tun_decap.bpf.o other_prog.o
 
 ## Testing
 
-The test suite uses `BPF_PROG_TEST_RUN` to verify:
+The project includes three levels of testing:
 
+### 1. Helper Unit Tests (No Root Required)
+
+Fast userspace tests for helper functions that **don't require elevated permissions**:
+
+```bash
+# Run helper tests only (no sudo needed)
+make test-helpers
+
+# Build helper test binaries
+make test-helpers-build
+```
+
+**Coverage:**
+- **Parsing helpers** (`test_parsing_helpers`) - 23 tests
+  - Cursor management and bounds checking
+  - Ethernet/IPv4/IPv6 header parsing
+  - Multi-layer packet parsing
+- **GRE protocol helpers** (`test_gre_helpers`) - 26 tests
+  - Header length calculation with various flags
+  - Flag validation (RFC 2784 compliance)
+  - Key extraction with/without checksum
+- **IPv6 and shared types** (`test_ipv6_helpers`) - 22 tests
+  - IPv6 address structure and conversion
+  - Configuration structure validation
+  - Constants and enum values
+
+**Total: 71 tests** running in **< 0.1 seconds** without kernel interaction.
+
+### 2. BPF Unit Tests (Requires Root)
+
+Tests actual XDP program execution using `BPF_PROG_TEST_RUN`:
+
+```bash
+# Run BPF tests only (requires root)
+make test-bpf
+
+# Run all unit tests (helper + BPF)
+make test
+```
+
+**Coverage:**
 - GRE decapsulation with whitelisted source
 - GRE drop for non-whitelisted source
 - GRE with optional fields (key, checksum, sequence)
-- IPIP decapsulation
+- GRE with IPv6 inner packets
+- IPIP decapsulation (IPv4-in-IPv4)
+- IPv6-in-IPv4 decapsulation (protocol 41)
+- IPv6 outer header handling
+- IPv4-in-IPv6 and IPv6-in-IPv6 decapsulation
 - Non-tunnel traffic passthrough
 - Malformed packet handling
 - Statistics accuracy
 
+### 3. Integration Tests (Requires Root + Docker)
+
+End-to-end tests with real network interfaces and packet capture:
+
 ```bash
-# Build and run all tests
+# Run Docker-based integration tests
+make integration-test
+
+# Run all tests (unit + integration)
+make test-all
+```
+
+**Coverage:**
+- Real packet decapsulation on veth interfaces
+- tcpdump verification with unique payload markers
+- Multi-container network isolation
+
+### Test Organization
+
+| Test Type | Files | Requires Root? | Run Time | What It Tests |
+|-----------|-------|----------------|----------|---------------|
+| Helper tests | `test_*_helpers.c` | ❌ No | ~0.1s | Pure C helper functions |
+| BPF tests | `test_decap.c` | ✅ Yes | ~2s | XDP program logic |
+| Integration | `tests/*.sh` | ✅ Yes | ~30s | End-to-end packet flow |
+
+### Quick Test Commands
+
+```bash
+# Fast development feedback (no root)
+make test-helpers
+
+# Full unit test suite
 make test
+
+# Everything (unit + integration)
+make test-all
+
+# Verify BPF program loads successfully
+sudo make verify
 ```
 
 ## Python Tools
@@ -241,8 +327,11 @@ xdp-tun-decap/
 │   ├── include/
 │   │   └── tun_decap.h        # Shared types (BPF + userspace)
 │   └── test/
-│       ├── test_decap.c       # Unit tests
-│       └── test_packets.h     # Test packet data
+│       ├── test_decap.c             # BPF unit tests (requires root)
+│       ├── test_packets.h           # Test packet data
+│       ├── test_parsing_helpers.c   # Parsing helpers tests (no root)
+│       ├── test_gre_helpers.c       # GRE helpers tests (no root)
+│       └── test_ipv6_helpers.c      # IPv6/config tests (no root)
 ├── map_manager/               # BPF map management tool
 │   ├── xdp_tun_decap_manager.py
 │   ├── README.md
@@ -252,7 +341,7 @@ xdp-tun-decap/
 │   ├── README.md
 │   ├── QUICKSTART.md
 │   └── docker-compose.lint.yml  # Linting infrastructure
-├── tests/                     # Integration tests
+├── tests/                     # Integration tests (Docker-based)
 ├── build/                     # Build output
 ├── Makefile
 ├── README.md                  # This file

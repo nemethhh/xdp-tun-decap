@@ -1,17 +1,21 @@
-# act configuration for local GitHub Actions testing
-# https://github.com/nektos/act
+# Configuration for running GitHub Actions locally with 'act'
+# Platform: Use official Ubuntu 22.04 image
+-P ubuntu-22.04=ubuntu:22.04
 
-# Use ubuntu-22.04 image for consistency with CI
--P ubuntu-22.04=catthehacker/ubuntu:act-22.04
--P ubuntu-latest=catthehacker/ubuntu:act-22.04
+# Add Linux capabilities for BPF development
+--container-options --cap-add=SYS_ADMIN --cap-add=BPF --cap-add=NET_ADMIN
 
-# Mount Docker socket for integration tests (if needed)
---container-daemon-socket -
+# Mount kernel resources for BPF development
+# - /sys/kernel/btf: Kernel BTF information for CO-RE
+# - /lib/modules: Kernel modules
+# - /sys/fs/bpf: BPF filesystem for pinned maps
+--container-options --volume=/sys/kernel/btf:/sys/kernel/btf:ro
+--container-options --volume=/lib/modules:/lib/modules:ro
+--container-options --volume=/sys/fs/bpf:/sys/fs/bpf:rw
 
-# Set default environment variables
---env ACTIONS_RUNTIME_TOKEN=fake-token
---env ACTIONS_CACHE_URL=https://fake-cache.local
-
-# Verbose output
-# Uncomment for debugging:
-# -v
+# Note: Unit tests (make test) require loading BPF programs and will not work
+# with 'act' due to Docker-in-Docker limitations. However, the build will
+# complete successfully and artifacts will be generated.
+#
+# For full testing locally, run integration tests directly:
+#   make all && cd tests && ./run-tests.sh

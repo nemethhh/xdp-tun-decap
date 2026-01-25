@@ -103,16 +103,36 @@ $(TEST_BIN): $(TEST_DIR)/test_decap.c $(TEST_DIR)/test_packets.h $(BPF_SKEL) | $
 	$(CC) $(USER_CFLAGS) $< -o $@ $(USER_LDFLAGS)
 	@echo "Generated $@"
 
-# Run tests (requires root for BPF operations)
+# Run unit tests (requires root for BPF operations)
+# Note: Unit tests use BPF_PROG_TEST_RUN which requires CAP_BPF and CAP_SYS_ADMIN
+# For comprehensive testing, also run integration tests: cd tests && ./run-tests.sh
 .PHONY: test
 test: $(TEST_BIN)
-	@echo "Running tests..."
+	@echo "Running unit tests..."
+	@echo "Note: These tests require loading BPF programs (CAP_BPF, CAP_SYS_ADMIN)"
+	@echo "For comprehensive testing, run: cd tests && ./run-tests.sh"
+	@echo ""
 	@if [ $$(id -u) -ne 0 ]; then \
 		echo "Tests require root privileges. Running with sudo..."; \
 		sudo $(TEST_BIN); \
 	else \
 		$(TEST_BIN); \
 	fi
+
+# Run integration tests (comprehensive Docker-based testing)
+# These tests use Docker containers with proper BPF capabilities
+# and test real packet decapsulation with tcpdump verification
+.PHONY: integration-test
+integration-test: all
+	@echo "Running integration tests with Docker containers..."
+	@echo "This will test actual packet decapsulation on a network interface"
+	@cd tests && ./run-tests.sh
+
+# Run all tests (unit + integration)
+.PHONY: test-all
+test-all: test integration-test
+	@echo ""
+	@echo "=== All tests completed ==="
 
 # Verify BPF program loads successfully
 .PHONY: verify
@@ -148,8 +168,8 @@ clean:
 .PHONY: rebuild
 rebuild: clean all
 
-# Source files to format/lint (exclude generated files)
-SOURCE_FILES := $(shell find $(SRC_DIR) -name '*.c' -o -name '*.h' | grep -v vmlinux.h | grep -v tun_decap.skel.h)
+# Source files to format/lint (exclude generated files and build directory)
+SOURCE_FILES := $(shell find $(SRC_DIR) -name '*.c' -o -name '*.h' | grep -v vmlinux.h | grep -v tun_decap.skel.h | grep -v build)
 
 # Format code with clang-format
 .PHONY: format

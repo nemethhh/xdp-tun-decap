@@ -12,9 +12,10 @@ This document explains the CI/CD setup and how to test GitHub Actions locally us
 - Manual workflow dispatch
 
 **Jobs:**
-- `build-and-test`: Builds the XDP program and runs unit tests
-- `integration-test`: Runs Docker-based integration tests
-- `lint-and-format`: Checks code formatting and common issues
+- `build-and-test`: Builds the XDP program and runs integration tests (combined for efficiency)
+- `lint`: Checks code formatting and common BPF issues
+
+**Runner:** `ubuntu-22.04`
 
 **Artifacts:**
 - BPF object file (`tun_decap.bpf.o`)
@@ -27,6 +28,11 @@ This document explains the CI/CD setup and how to test GitHub Actions locally us
 **Triggers:**
 - Push of version tags (e.g., `v1.0.0`, `v2.1.3`)
 - Manual workflow dispatch with tag input
+
+**Job:**
+- `create-release`: Builds artifacts, generates changelog, and creates GitHub release
+
+**Runner:** `ubuntu-22.04`
 
 **Artifacts:**
 - Release tarball with source and binaries
@@ -108,9 +114,16 @@ alias act='docker run --rm -it -v $(pwd):/workspace -w /workspace -v /var/run/do
 ### Configuration
 
 The repository includes `.actrc` with default settings:
-- Uses `ubuntu-22.04` images from `catthehacker`
-- Mounts Docker socket for integration tests
-- Sets fake tokens for local testing
+- Uses official `ubuntu:22.04` Docker image (secure, no third-party images)
+- Adds Linux capabilities for BPF development (SYS_ADMIN, BPF, NET_ADMIN)
+- Mounts kernel resources (/sys/kernel/btf, /lib/modules, /sys/fs/bpf)
+- Note: Full BPF testing not possible in Docker-in-Docker
+
+**Security Note:** We use official Ubuntu images instead of third-party images like `catthehacker/ubuntu` to avoid potential security risks. See [nektos/act#2329](https://github.com/nektos/act/issues/2329) for details.
+
+**Compatibility:** The workflows include a setup step that installs `sudo` if not present. This allows the same workflow to run on:
+- GitHub Actions runners (where sudo is pre-installed)
+- Local Docker containers with act (where sudo needs to be installed)
 
 ### Running Workflows Locally
 
@@ -124,8 +137,11 @@ act -l
 # Run all CI jobs
 act push
 
-# Run specific job
+# Run specific job (build and test)
 act push -j build-and-test
+
+# Run specific job (lint)
+act push -j lint
 
 # Run with verbose output
 act push -v
@@ -187,6 +203,7 @@ act push -e .github/test-events/tag-push.json
 5. **Integration Tests**: May need adjustments
    - Docker-in-Docker can be tricky
    - Use `--container-daemon-socket -` in .actrc
+   - Integration tests are part of the `build-and-test` job
 
 ### Best Practices
 
@@ -199,17 +216,18 @@ act push -e .github/test-events/tag-push.json
 
 **Don't rely on act for:**
 - ❌ BPF program verification
-- ❌ Full integration tests
+- ❌ Full integration tests (Docker-in-Docker limitations)
 - ❌ Performance testing
 - ❌ Kernel-specific features
 
 **Recommended workflow:**
 1. Write/modify GitHub Actions workflow
 2. Test syntax with `act -n` (dry run)
-3. Test build process with `act push -j build-and-test`
-4. Push to GitHub for full testing
-5. Review CI results
-6. Merge when green
+3. Test build process with `act push -j build-and-test` (includes integration tests)
+4. Test linting with `act push -j lint`
+5. Push to GitHub for full testing
+6. Review CI results
+7. Merge when green
 
 ### Debugging
 

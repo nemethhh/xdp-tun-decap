@@ -8,7 +8,6 @@ Checks: >
   -bugprone-assignment-in-if-condition,
   -bugprone-narrowing-conversions,
   clang-analyzer-*,
-  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
   performance-*,
   -performance-no-int-to-ptr,
   readability-braces-around-statements,
@@ -21,10 +20,13 @@ Checks: >
   misc-definitions-in-headers,
   misc-redundant-expression,
   misc-unconventional-assign-operator,
-  misc-unused-using-decls
+  misc-unused-using-decls,
+  cert-err33-c,
+  readability-isolate-declaration,
+  readability-identifier-naming
 
 WarningsAsErrors: ''
-HeaderFilterRegex: '^(?!.*(vmlinux\.h|\.skel\.h)).*$'
+HeaderFilterRegex: '^(?!.*(vmlinux\.h|\.skel\.h|build/)).*$'
 FormatStyle: file
 
 CheckOptions:

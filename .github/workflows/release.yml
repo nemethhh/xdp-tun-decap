@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'  # Trigger on semantic version tags (e.g., v1.0.0, v2.1.3)
+      - "v*.*.*" # Trigger on semantic version tags (e.g., v1.0.0, v2.1.3)
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g., v1.0.0)'
+        description: "Tag to release (e.g., v1.0.0)"
         required: true
         type: string
 
@@ -15,193 +15,233 @@ jobs:
   create-release:
     runs-on: ubuntu-22.04
     permissions:
-      contents: write  # Required for creating releases
+      contents: write # Required for creating releases
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # Full history for changelog
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for changelog
 
-    - name: Set version from tag
-      id: version
-      run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          VERSION="${{ inputs.tag }}"
-        else
-          VERSION=${GITHUB_REF#refs/tags/}
-        fi
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "version_number=${VERSION#v}" >> $GITHUB_OUTPUT
-        echo "Release version: $VERSION"
+      - name: Setup environment for act
+        run: |
+          # Install sudo if not present (for act/Docker environments)
+          if ! command -v sudo &> /dev/null; then
+            apt-get update && apt-get install -y sudo
+          fi
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          clang \
-          llvm \
-          libelf-dev \
-          libz-dev \
-          libbpf-dev \
-          linux-headers-$(uname -r) \
-          build-essential \
-          pkg-config
+      - name: Set version from tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.tag }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_number=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "Release version: $VERSION"
 
-    - name: Install bpftool
-      run: |
-        sudo apt-get install -y linux-tools-common linux-tools-generic
-        if [ ! -f /usr/bin/bpftool ] && [ -f /usr/lib/linux-tools/*/bpftool ]; then
-          sudo ln -sf $(find /usr/lib/linux-tools/*/bpftool | head -n1) /usr/bin/bpftool
-        fi
-        bpftool version
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            llvm \
+            libelf-dev \
+            libz-dev \
+            libbpf-dev \
+            linux-headers-generic \
+            build-essential \
+            pkg-config \
+            git \
+            file \
+            binutils-dev \
+            libcap-dev
 
-    - name: Install libxdp
-      run: |
-        sudo apt-get install -y libxdp-dev || echo "libxdp not available"
+      - name: Build and install bpftool and libbpf from source
+        run: |
+          # Clone bpftool repository with submodules (includes libbpf)
+          cd /tmp
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            --branch v7.6.0 https://github.com/libbpf/bpftool.git
 
-    - name: Generate vmlinux.h
-      run: |
-        if [ -f /sys/kernel/btf/vmlinux ]; then
-          make vmlinux
-        else
-          echo "Creating placeholder vmlinux.h for CI build"
-          cat > src/bpf/vmlinux.h << 'EOF'
-        /* Minimal vmlinux.h for CI build */
-        #ifndef __VMLINUX_H__
-        #define __VMLINUX_H__
-        typedef unsigned char __u8;
-        typedef unsigned short __u16;
-        typedef unsigned int __u32;
-        typedef unsigned long long __u64;
-        #endif
-        EOF
-        fi
+          # Build and install libbpf first (needed for newer APIs)
+          cd bpftool/libbpf/src
+          make -j$(nproc)
+          sudo BUILD_STATIC_ONLY=y make install
+          sudo ldconfig
 
-    - name: Build release artifacts
-      run: |
-        make all
-        make test-build
+          # Build and install bpftool
+          cd /tmp/bpftool/src
+          make -j$(nproc)
+          sudo make install
 
-    - name: Create release package
-      run: |
-        VERSION=${{ steps.version.outputs.version }}
-        PKG_NAME="xdp-tun-decap-${VERSION}"
+          # Verify installations
+          bpftool version
+          pkg-config --modversion libbpf
 
-        # Create release directory
-        mkdir -p release/${PKG_NAME}
+      - name: Install libxdp
+        run: |
+          sudo apt-get install -y libxdp-dev || echo "libxdp not available"
 
-        # Copy binary artifacts
-        cp build/tun_decap.bpf.o release/${PKG_NAME}/
-        cp build/tun_decap.skel.h release/${PKG_NAME}/
-        cp build/test_decap release/${PKG_NAME}/
+      - name: Generate vmlinux.h
+        run: |
+          if [ -f /sys/kernel/btf/vmlinux ]; then
+            make vmlinux
+          else
+            echo "Creating placeholder vmlinux.h for CI build"
+            cat > src/bpf/vmlinux.h << 'EOF'
+          /* Minimal vmlinux.h for CI build */
+          #ifndef __VMLINUX_H__
+          #define __VMLINUX_H__
+          typedef unsigned char __u8;
+          typedef unsigned short __u16;
+          typedef unsigned int __u32;
+          typedef unsigned long long __u64;
+          #endif
+          EOF
+          fi
 
-        # Copy documentation
-        cp README.md release/${PKG_NAME}/
-        cp CLAUDE.md release/${PKG_NAME}/
-        cp Makefile release/${PKG_NAME}/
+      - name: Build release artifacts
+        run: |
+          make all
+          make test-build
 
-        # Copy source files
-        mkdir -p release/${PKG_NAME}/src
-        cp -r src/* release/${PKG_NAME}/src/
+      - name: Create release package
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          PKG_NAME="xdp-tun-decap-${VERSION}"
 
-        # Create tarball
-        cd release
-        tar czf ${PKG_NAME}.tar.gz ${PKG_NAME}
-        cd ..
+          # Create release directory
+          mkdir -p release/${PKG_NAME}
 
-        # Create checksums
-        cd release
-        sha256sum ${PKG_NAME}.tar.gz > ${PKG_NAME}.tar.gz.sha256
-        sha256sum ${PKG_NAME}/tun_decap.bpf.o > tun_decap.bpf.o.sha256
-        cd ..
+          # Copy binary artifacts
+          cp build/tun_decap.bpf.o release/${PKG_NAME}/
+          cp build/tun_decap.skel.h release/${PKG_NAME}/
+          cp build/test_decap release/${PKG_NAME}/
 
-    - name: Generate changelog
-      id: changelog
-      run: |
-        VERSION=${{ steps.version.outputs.version }}
+          # Copy documentation
+          cp README.md release/${PKG_NAME}/
+          cp CLAUDE.md release/${PKG_NAME}/
+          cp Makefile release/${PKG_NAME}/
 
-        # Get previous tag
-        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          # Copy source files
+          mkdir -p release/${PKG_NAME}/src
+          cp -r src/* release/${PKG_NAME}/src/
 
-        if [ -n "$PREV_TAG" ]; then
-          echo "Generating changelog from $PREV_TAG to $VERSION"
-          CHANGELOG=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD)
-        else
-          echo "No previous tag found, showing recent commits"
-          CHANGELOG=$(git log --pretty=format:"- %s (%h)" -n 20)
-        fi
+          # Create tarball
+          cd release
+          tar czf ${PKG_NAME}.tar.gz ${PKG_NAME}
+          cd ..
 
-        # Save changelog to file
-        cat > release_notes.md << EOF
-        ## XDP Tunnel Decapsulation Program $VERSION
+          # Create checksums
+          cd release
+          sha256sum ${PKG_NAME}.tar.gz > ${PKG_NAME}.tar.gz.sha256
+          sha256sum ${PKG_NAME}/tun_decap.bpf.o > tun_decap.bpf.o.sha256
+          cd ..
 
-        ### Changes
-        $CHANGELOG
+      - name: Generate changelog
+        id: changelog
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
 
-        ### Features
-        - High-performance GRE and IPIP tunnel decapsulation using XDP
-        - Full IPv6 support (inner and outer headers)
-        - Per-CPU hash maps for lock-free whitelist lookups
-        - Separate IPv4 and IPv6 whitelist maps
-        - Comprehensive statistics tracking
-        - Runtime configuration for disabling features
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
-        ### Requirements
-        - Linux kernel 5.17+ with CONFIG_DEBUG_INFO_BTF=y
-        - XDP-capable network interface
-        - clang/LLVM with BPF support
-        - libbpf, bpftool
+          if [ -n "$PREV_TAG" ]; then
+            echo "Generating changelog from $PREV_TAG to $VERSION"
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD)
+          else
+            echo "No previous tag found, showing recent commits"
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" -n 20)
+          fi
 
-        ### Installation
-        \`\`\`bash
-        # Extract release
-        tar xzf xdp-tun-decap-${VERSION}.tar.gz
-        cd xdp-tun-decap-${VERSION}
+          # Save changelog to file
+          cat > release_notes.md << EOF
+          ## XDP Tunnel Decapsulation Program $VERSION
 
-        # Build from source (recommended for target kernel)
-        make all
+          ### Changes
+          $CHANGELOG
 
-        # Or use pre-built binary (if kernel-compatible)
-        sudo xdp-loader load -m native eth0 tun_decap.bpf.o
-        \`\`\`
+          ### Features
+          - High-performance GRE and IPIP tunnel decapsulation using XDP
+          - Full IPv6 support (inner and outer headers)
+          - Per-CPU hash maps for lock-free whitelist lookups
+          - Separate IPv4 and IPv6 whitelist maps
+          - Comprehensive statistics tracking
+          - Runtime configuration for disabling features
 
-        ### Checksums
-        See \`.sha256\` files for artifact checksums.
+          ### Requirements
+          - Linux kernel 5.17+ with CONFIG_DEBUG_INFO_BTF=y
+          - XDP-capable network interface
+          - clang/LLVM with BPF support
+          - libbpf, bpftool
 
-        ### Documentation
-        - [README.md](README.md) - User documentation
-        - [CLAUDE.md](CLAUDE.md) - Developer documentation
-        EOF
+          ### Installation
+          \`\`\`bash
+          # Extract release
+          tar xzf xdp-tun-decap-${VERSION}.tar.gz
+          cd xdp-tun-decap-${VERSION}
 
-        echo "changelog<<EOF" >> $GITHUB_OUTPUT
-        cat release_notes.md >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+          # Build from source (recommended for target kernel)
+          make all
 
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: ${{ steps.version.outputs.version }}
-        name: Release ${{ steps.version.outputs.version }}
-        body_path: release_notes.md
-        draft: false
-        prerelease: false
-        files: |
-          release/xdp-tun-decap-${{ steps.version.outputs.version }}.tar.gz
-          release/xdp-tun-decap-${{ steps.version.outputs.version }}.tar.gz.sha256
-          release/tun_decap.bpf.o.sha256
-          build/tun_decap.bpf.o
-          build/tun_decap.skel.h
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Or use pre-built binary (if kernel-compatible)
+          sudo xdp-loader load -m native eth0 tun_decap.bpf.o
+          \`\`\`
 
-    - name: Upload release artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-${{ steps.version.outputs.version }}
-        path: |
-          release/xdp-tun-decap-${{ steps.version.outputs.version }}.tar.gz
-          release/*.sha256
-          build/tun_decap.bpf.o
-          build/tun_decap.skel.h
-        retention-days: 90
+          ### Checksums
+          See \`.sha256\` files for artifact checksums.
+
+          ### Documentation
+          - [README.md](README.md) - User documentation
+          - [CLAUDE.md](CLAUDE.md) - Developer documentation
+          EOF
+
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          cat release_notes.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: github.actor != 'nektos/act'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          files: |
+            release/xdp-tun-decap-${{ steps.version.outputs.version }}.tar.gz
+            release/xdp-tun-decap-${{ steps.version.outputs.version }}.tar.gz.sha256
+            release/tun_decap.bpf.o.sha256
+            build/tun_decap.bpf.o
+            build/tun_decap.skel.h
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release artifacts
+        if: github.actor != 'nektos/act'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.version.outputs.version }}
+          path: |
+            release/xdp-tun-decap-${{ steps.version.outputs.version }}.tar.gz
+            release/*.sha256
+            build/tun_decap.bpf.o
+            build/tun_decap.skel.h
+          retention-days: 90
+
+      - name: Local release summary
+        if: github.actor == 'nektos/act'
+        run: |
+          echo "=== Local Build Complete ==="
+          echo ""
+          echo "Release artifacts created in ./release/"
+          ls -lh release/
+          echo ""
+          echo "Build artifacts:"
+          ls -lh build/*.o build/*.h 2>/dev/null || true
+          echo ""
+          echo "Note: GitHub release creation skipped (running with act)"

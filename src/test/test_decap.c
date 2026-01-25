@@ -888,12 +888,12 @@ static void test_statistics(struct tun_decap_bpf *skel)
 	__u64 pass_non = read_stat(stats_fd, STAT_PASS_NON_TUNNEL);
 
 	printf("\n  Statistics summary:\n");
-	printf("    RX total:        %llu\n", (unsigned long long)total);
-	printf("    RX GRE:          %llu\n", (unsigned long long)gre);
-	printf("    RX IPIP:         %llu\n", (unsigned long long)ipip);
-	printf("    Decap success:   %llu\n", (unsigned long long)decap_ok);
-	printf("    Drop (no WL):    %llu\n", (unsigned long long)drops_wl);
-	printf("    Pass (non-tun):  %llu\n", (unsigned long long)pass_non);
+	printf("    %-25s %llu\n", stat_descriptions[STAT_RX_TOTAL], (unsigned long long)total);
+	printf("    %-25s %llu\n", stat_descriptions[STAT_RX_GRE], (unsigned long long)gre);
+	printf("    %-25s %llu\n", stat_descriptions[STAT_RX_IPIP], (unsigned long long)ipip);
+	printf("    %-25s %llu\n", stat_descriptions[STAT_DECAP_SUCCESS], (unsigned long long)decap_ok);
+	printf("    %-25s %llu\n", stat_descriptions[STAT_DROP_NOT_WHITELISTED], (unsigned long long)drops_wl);
+	printf("    %-25s %llu\n", stat_descriptions[STAT_PASS_NON_TUNNEL], (unsigned long long)pass_non);
 
 	/* Verify reasonable values */
 	if (total == 0) {

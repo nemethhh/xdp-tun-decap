@@ -127,7 +127,7 @@ struct tun_decap_config {
  * Helper macros for statistics names (userspace)
  */
 #ifndef __BPF__
-static const char *stat_names[] = {
+static const char *stat_names[] __attribute__((unused)) = {
     [STAT_RX_TOTAL] = "rx_total",
     [STAT_RX_GRE] = "rx_gre",
     [STAT_RX_IPIP] = "rx_ipip",

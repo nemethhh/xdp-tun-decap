@@ -8,7 +8,7 @@
  * Features:
  * - libxdp multi-program support with XDP_RUN_CONFIG
  * - Per-CPU whitelist for lock-free lookups
- * - Per-CPU statistics counters
+ * - Per-CPU statistics counters (single-struct for minimal map lookups)
  * - CO-RE support for kernel portability
  *
  * Target: Linux kernel 5.17+
@@ -110,16 +110,17 @@ struct {
 } tun_decap_whitelist_v6 SEC(".maps");
 
 /*
- * Per-CPU statistics array
+ * Per-CPU statistics - single struct per entry
  *
- * Lock-free counters for tracking packet processing.
- * Each CPU maintains its own counters; userspace aggregates.
+ * All counters in one map entry = ONE bpf_map_lookup_elem per packet,
+ * then direct field increments (no helper calls). This is the single
+ * biggest performance optimization vs per-counter array entries.
  */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, STAT_MAX);
+	__uint(max_entries, 1);
 	__type(key, __u32);
-	__type(value, __u64);
+	__type(value, struct tun_decap_stats);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } tun_decap_stats SEC(".maps");
 
@@ -138,7 +139,7 @@ struct {
 } tun_decap_config SEC(".maps");
 
 /*
- * Get runtime configuration
+ * Get runtime configuration (called once per packet)
  *
  * @return: Pointer to config or NULL if not found
  */
@@ -149,24 +150,17 @@ static __always_inline struct tun_decap_config *get_config(void)
 }
 
 /*
- * Update statistics counter
+ * Get per-CPU statistics struct (called once per packet)
  *
- * Per-CPU array requires no locking.
- * Statistics collection can be disabled via config map.
+ * Single lookup provides access to all counters via direct
+ * field increments - no additional map lookups needed.
+ *
+ * @return: Pointer to stats struct or NULL
  */
-static __always_inline void update_stat(__u32 idx)
+static __always_inline struct tun_decap_stats *get_stats(void)
 {
-	struct tun_decap_config *cfg;
-	__u64 *count;
-
-	/* Check if statistics are disabled */
-	cfg = get_config();
-	if (cfg && cfg->disable_stats)
-		return;
-
-	count = bpf_map_lookup_elem(&tun_decap_stats, &idx);
-	if (count)
-		(*count)++;
+	__u32 key = 0;
+	return bpf_map_lookup_elem(&tun_decap_stats, &key);
 }
 
 /*
@@ -210,34 +204,51 @@ static __always_inline int is_whitelisted_v6(const struct in6_addr *ip6_addr)
 /*
  * Perform decapsulation by removing outer headers
  *
- * This function:
- * 1. Saves the original Ethernet header
- * 2. Calls bpf_xdp_adjust_head() to remove tunnel headers
- * 3. Restores the Ethernet header at the new position
- * 4. Updates EtherType to match inner protocol (IPv4 or IPv6)
+ * Uses forward-copy technique (Katran-style):
+ * 1. Copy MAC addresses forward to new position (before adjust)
+ * 2. Set EtherType at new position
+ * 3. Call bpf_xdp_adjust_head() to remove tunnel headers
+ *
+ * This avoids stack temporaries and the post-adjust bounds check
+ * + restore that the save/restore approach requires.
  *
  * @ctx: XDP context
  * @decap_len: Number of bytes to remove (outer IP + tunnel header)
  * @inner_proto: Inner protocol type (ETH_P_IP or ETH_P_IPV6)
+ * @stats: Pre-fetched stats pointer (may be NULL if stats disabled)
  * @return: XDP action (XDP_PASS on success, XDP_DROP on failure)
  */
-static __always_inline int decapsulate(struct xdp_md *ctx, int decap_len, __u16 inner_proto)
+static __always_inline int decapsulate(struct xdp_md *ctx, int decap_len, __u16 inner_proto,
+                                       struct tun_decap_stats *stats)
 {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
 	struct ethhdr *eth = data;
-	struct ethhdr eth_copy;
+	struct ethhdr *new_eth;
 	int ret;
 
-	/* Bounds check for Ethernet header */
+	/* Bounds check: need access to current ETH header and the new position */
 	if ((void *)(eth + 1) > data_end) {
-		update_stat(STAT_DECAP_FAILED);
+		if (stats)
+			stats->decap_failed++;
 		return XDP_DROP;
 	}
 
-	/* Save original Ethernet header to stack */
+	/* Bounds check: verify new ETH position is within packet */
+	new_eth = (void *)eth + decap_len;
+	if ((void *)(new_eth + 1) > data_end) {
+		if (stats)
+			stats->decap_failed++;
+		return XDP_DROP;
+	}
+
+	/* Forward-copy: write MAC addresses and EtherType to new position
+	 * before adjusting head. After adjust, this becomes the ETH header. */
 	// NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-	__builtin_memcpy(&eth_copy, eth, sizeof(eth_copy));
+	__builtin_memcpy(new_eth->h_dest, eth->h_dest, 6);
+	// NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+	__builtin_memcpy(new_eth->h_source, eth->h_source, 6);
+	new_eth->h_proto = bpf_htons(inner_proto);
 
 	/*
 	 * Adjust head to remove outer IP + tunnel headers
@@ -245,32 +256,13 @@ static __always_inline int decapsulate(struct xdp_md *ctx, int decap_len, __u16 
 	 */
 	ret = bpf_xdp_adjust_head(ctx, decap_len);
 	if (ret < 0) {
-		update_stat(STAT_DECAP_FAILED);
+		if (stats)
+			stats->decap_failed++;
 		return XDP_DROP;
 	}
 
-	/*
-	 * CRITICAL: After bpf_xdp_adjust_head(), all previous pointers
-	 * are invalidated. We must re-fetch data and data_end.
-	 */
-	data = (void *)(long)ctx->data;
-	data_end = (void *)(long)ctx->data_end;
-
-	/* Get new Ethernet header position */
-	eth = data;
-	if ((void *)(eth + 1) > data_end) {
-		update_stat(STAT_DECAP_FAILED);
-		return XDP_DROP;
-	}
-
-	/* Restore Ethernet header at new position */
-	// NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-	__builtin_memcpy(eth, &eth_copy, sizeof(*eth));
-
-	/* Update EtherType to reflect inner protocol (IPv4 or IPv6) */
-	eth->h_proto = bpf_htons(inner_proto);
-
-	update_stat(STAT_DECAP_SUCCESS);
+	if (stats)
+		stats->decap_success++;
 	return XDP_PASS;
 }
 
@@ -286,34 +278,39 @@ static __always_inline int decapsulate(struct xdp_md *ctx, int decap_len, __u16 
  * @outer_iph: Pointer to outer IP header
  * @outer_ip_len: Outer IP header length in bytes
  * @data_end: Packet end pointer
+ * @stats: Pre-fetched stats pointer (may be NULL)
  * @return: XDP action
  */
 static __always_inline int handle_gre(struct xdp_md *ctx, struct iphdr *outer_iph, int outer_ip_len,
-                                      void *data_end)
+                                      void *data_end, struct tun_decap_stats *stats)
 {
 	struct gre_base_hdr *greh;
 	int gre_len;
 	int decap_len;
 	__u16 inner_proto;
 
-	update_stat(STAT_RX_GRE);
+	if (stats)
+		stats->rx_gre++;
 
 	/* Check whitelist before processing */
 	if (!is_whitelisted(outer_iph->saddr)) {
-		update_stat(STAT_DROP_NOT_WHITELISTED);
+		if (stats)
+			stats->drop_not_whitelisted++;
 		return XDP_DROP;
 	}
 
 	/* Parse GRE header */
 	greh = (void *)outer_iph + outer_ip_len;
 	if ((void *)(greh + 1) > data_end) {
-		update_stat(STAT_DROP_MALFORMED);
+		if (stats)
+			stats->drop_malformed++;
 		return XDP_DROP;
 	}
 
 	/* Validate GRE header (version must be 0) */
 	if (gre_validate_flags(greh->flags) < 0) {
-		update_stat(STAT_DROP_MALFORMED);
+		if (stats)
+			stats->drop_malformed++;
 		return XDP_DROP;
 	}
 
@@ -327,32 +324,34 @@ static __always_inline int handle_gre(struct xdp_md *ctx, struct iphdr *outer_ip
 
 		/* Verify inner IPv4 header exists */
 		if ((void *)greh + gre_len + sizeof(struct iphdr) > data_end) {
-			update_stat(STAT_DROP_MALFORMED);
+			if (stats)
+				stats->drop_malformed++;
 			return XDP_DROP;
 		}
-
-		update_stat(STAT_RX_GRE);
 	} else if (inner_proto == ETH_P_IPV6) {
 		/* IPv6 inner packet */
 		gre_len = gre_hdr_len(greh->flags);
 
 		/* Verify inner IPv6 header exists */
 		if ((void *)greh + gre_len + sizeof(struct ipv6hdr) > data_end) {
-			update_stat(STAT_DROP_MALFORMED);
+			if (stats)
+				stats->drop_malformed++;
 			return XDP_DROP;
 		}
 
-		update_stat(STAT_RX_GRE_IPV6_INNER);
+		if (stats)
+			stats->rx_gre_ipv6_inner++;
 	} else {
 		/* Not IPv4 or IPv6 payload, pass to next program */
-		update_stat(STAT_PASS_NON_TUNNEL);
+		if (stats)
+			stats->pass_non_tunnel++;
 		return XDP_PASS;
 	}
 
 	/* Total headers to remove: outer IP + GRE */
 	decap_len = outer_ip_len + gre_len;
 
-	return decapsulate(ctx, decap_len, inner_proto);
+	return decapsulate(ctx, decap_len, inner_proto, stats);
 }
 
 /*
@@ -367,36 +366,42 @@ static __always_inline int handle_gre(struct xdp_md *ctx, struct iphdr *outer_ip
  * @outer_iph: Pointer to outer IP header
  * @outer_ip_len: Outer IP header length in bytes
  * @data_end: Packet end pointer
+ * @stats: Pre-fetched stats pointer (may be NULL)
  * @return: XDP action
  */
 static __always_inline int handle_ipip(struct xdp_md *ctx, struct iphdr *outer_iph,
-                                       int outer_ip_len, void *data_end)
+                                       int outer_ip_len, void *data_end,
+                                       struct tun_decap_stats *stats)
 {
 	struct iphdr *inner_iph;
 
-	update_stat(STAT_RX_IPIP);
+	if (stats)
+		stats->rx_ipip++;
 
 	/* Check whitelist before processing */
 	if (!is_whitelisted(outer_iph->saddr)) {
-		update_stat(STAT_DROP_NOT_WHITELISTED);
+		if (stats)
+			stats->drop_not_whitelisted++;
 		return XDP_DROP;
 	}
 
 	/* Verify inner IP header exists */
 	inner_iph = (void *)outer_iph + outer_ip_len;
 	if ((void *)(inner_iph + 1) > data_end) {
-		update_stat(STAT_DROP_MALFORMED);
+		if (stats)
+			stats->drop_malformed++;
 		return XDP_DROP;
 	}
 
 	/* Validate inner IPv4 header */
 	if (inner_iph->version != 4 || inner_iph->ihl < 5) {
-		update_stat(STAT_DROP_MALFORMED);
+		if (stats)
+			stats->drop_malformed++;
 		return XDP_DROP;
 	}
 
 	/* IPIP: only remove outer IP header (no tunnel header) */
-	return decapsulate(ctx, outer_ip_len, ETH_P_IP);
+	return decapsulate(ctx, outer_ip_len, ETH_P_IP, stats);
 }
 
 /*
@@ -411,38 +416,45 @@ static __always_inline int handle_ipip(struct xdp_md *ctx, struct iphdr *outer_i
  * @outer_iph: Pointer to outer IPv4 header
  * @outer_ip_len: Outer IP header length in bytes
  * @data_end: Packet end pointer
+ * @stats: Pre-fetched stats pointer (may be NULL)
  * @return: XDP action
  */
 static __always_inline int handle_ipv6_in_ipv4(struct xdp_md *ctx, struct iphdr *outer_iph,
-                                               int outer_ip_len, void *data_end)
+                                               int outer_ip_len, void *data_end,
+                                               struct tun_decap_stats *stats)
 {
 	struct ipv6hdr *inner_ip6h;
 
-	update_stat(STAT_RX_IPV6_IN_IPV4);
+	if (stats)
+		stats->rx_ipv6_in_ipv4++;
 
 	/* Check whitelist before processing */
 	if (!is_whitelisted(outer_iph->saddr)) {
-		update_stat(STAT_DROP_NOT_WHITELISTED);
+		if (stats)
+			stats->drop_not_whitelisted++;
 		return XDP_DROP;
 	}
 
 	/* Verify inner IPv6 header exists */
 	inner_ip6h = (void *)outer_iph + outer_ip_len;
 	if ((void *)(inner_ip6h + 1) > data_end) {
-		update_stat(STAT_DROP_MALFORMED);
+		if (stats)
+			stats->drop_malformed++;
 		return XDP_DROP;
 	}
 
 	/* Validate inner IPv6 header version */
 	if (inner_ip6h->version != 6) {
-		update_stat(STAT_DROP_MALFORMED);
+		if (stats)
+			stats->drop_malformed++;
 		return XDP_DROP;
 	}
 
-	update_stat(STAT_RX_IPIP_IPV6_INNER);
+	if (stats)
+		stats->rx_ipip_ipv6_inner++;
 
 	/* Remove outer IPv4 header (no tunnel header) */
-	return decapsulate(ctx, outer_ip_len, ETH_P_IPV6);
+	return decapsulate(ctx, outer_ip_len, ETH_P_IPV6, stats);
 }
 
 /*
@@ -454,35 +466,41 @@ static __always_inline int handle_ipv6_in_ipv4(struct xdp_md *ctx, struct iphdr 
  * @ctx: XDP context
  * @outer_ip6h: Pointer to outer IPv6 header
  * @data_end: Packet end pointer
+ * @stats: Pre-fetched stats pointer (may be NULL)
  * @return: XDP action
  */
 static __always_inline int handle_gre_ipv6(struct xdp_md *ctx, struct ipv6hdr *outer_ip6h,
-                                           void *data_end)
+                                           void *data_end, struct tun_decap_stats *stats)
 {
 	struct gre_base_hdr *greh;
 	int gre_len;
 	int decap_len;
 	__u16 inner_proto;
 
-	update_stat(STAT_RX_GRE);
-	update_stat(STAT_RX_IPV6_OUTER);
+	if (stats) {
+		stats->rx_gre++;
+		stats->rx_ipv6_outer++;
+	}
 
 	/* Check IPv6 whitelist before processing */
 	if (!is_whitelisted_v6(&outer_ip6h->saddr)) {
-		update_stat(STAT_DROP_NOT_WHITELISTED);
+		if (stats)
+			stats->drop_not_whitelisted++;
 		return XDP_DROP;
 	}
 
 	/* Parse GRE header (follows IPv6 header, which is fixed 40 bytes) */
 	greh = (void *)(outer_ip6h + 1);
 	if ((void *)(greh + 1) > data_end) {
-		update_stat(STAT_DROP_MALFORMED);
+		if (stats)
+			stats->drop_malformed++;
 		return XDP_DROP;
 	}
 
 	/* Validate GRE header */
 	if (gre_validate_flags(greh->flags) < 0) {
-		update_stat(STAT_DROP_MALFORMED);
+		if (stats)
+			stats->drop_malformed++;
 		return XDP_DROP;
 	}
 
@@ -494,27 +512,31 @@ static __always_inline int handle_gre_ipv6(struct xdp_md *ctx, struct ipv6hdr *o
 		gre_len = gre_hdr_len(greh->flags);
 
 		if ((void *)greh + gre_len + sizeof(struct iphdr) > data_end) {
-			update_stat(STAT_DROP_MALFORMED);
+			if (stats)
+				stats->drop_malformed++;
 			return XDP_DROP;
 		}
 	} else if (inner_proto == ETH_P_IPV6) {
 		gre_len = gre_hdr_len(greh->flags);
 
 		if ((void *)greh + gre_len + sizeof(struct ipv6hdr) > data_end) {
-			update_stat(STAT_DROP_MALFORMED);
+			if (stats)
+				stats->drop_malformed++;
 			return XDP_DROP;
 		}
 
-		update_stat(STAT_RX_GRE_IPV6_INNER);
+		if (stats)
+			stats->rx_gre_ipv6_inner++;
 	} else {
-		update_stat(STAT_PASS_NON_TUNNEL);
+		if (stats)
+			stats->pass_non_tunnel++;
 		return XDP_PASS;
 	}
 
 	/* Total headers to remove: IPv6 header (40 bytes) + GRE */
 	decap_len = sizeof(struct ipv6hdr) + gre_len;
 
-	return decapsulate(ctx, decap_len, inner_proto);
+	return decapsulate(ctx, decap_len, inner_proto, stats);
 }
 
 /*
@@ -527,19 +549,23 @@ static __always_inline int handle_gre_ipv6(struct xdp_md *ctx, struct ipv6hdr *o
  * @outer_ip6h: Pointer to outer IPv6 header
  * @next_hdr: IPv6 next header protocol
  * @data_end: Packet end pointer
+ * @stats: Pre-fetched stats pointer (may be NULL)
  * @return: XDP action
  */
 static __always_inline int handle_ipip_ipv6(struct xdp_md *ctx, struct ipv6hdr *outer_ip6h,
-                                            __u8 next_hdr, void *data_end)
+                                            __u8 next_hdr, void *data_end,
+                                            struct tun_decap_stats *stats)
 {
 	void *inner;
 	__u16 inner_proto;
 
-	update_stat(STAT_RX_IPV6_OUTER);
+	if (stats)
+		stats->rx_ipv6_outer++;
 
 	/* Check IPv6 whitelist before processing */
 	if (!is_whitelisted_v6(&outer_ip6h->saddr)) {
-		update_stat(STAT_DROP_NOT_WHITELISTED);
+		if (stats)
+			stats->drop_not_whitelisted++;
 		return XDP_DROP;
 	}
 
@@ -550,15 +576,18 @@ static __always_inline int handle_ipip_ipv6(struct xdp_md *ctx, struct ipv6hdr *
 		/* IPv4-in-IPv6 */
 		struct iphdr *inner_iph = inner;
 
-		update_stat(STAT_RX_IPIP);
+		if (stats)
+			stats->rx_ipip++;
 
 		if ((void *)(inner_iph + 1) > data_end) {
-			update_stat(STAT_DROP_MALFORMED);
+			if (stats)
+				stats->drop_malformed++;
 			return XDP_DROP;
 		}
 
 		if (inner_iph->version != 4 || inner_iph->ihl < 5) {
-			update_stat(STAT_DROP_MALFORMED);
+			if (stats)
+				stats->drop_malformed++;
 			return XDP_DROP;
 		}
 
@@ -567,41 +596,47 @@ static __always_inline int handle_ipip_ipv6(struct xdp_md *ctx, struct ipv6hdr *
 		/* IPv6-in-IPv6 */
 		struct ipv6hdr *inner_ip6h = inner;
 
-		update_stat(STAT_RX_IPV6_IN_IPV4); /* Reuse stat for IP-in-IP tunnels */
-		update_stat(STAT_RX_IPIP_IPV6_INNER);
+		if (stats) {
+			stats->rx_ipv6_in_ipv6++;
+			stats->rx_ipip_ipv6_inner++;
+		}
 
 		if ((void *)(inner_ip6h + 1) > data_end) {
-			update_stat(STAT_DROP_MALFORMED);
+			if (stats)
+				stats->drop_malformed++;
 			return XDP_DROP;
 		}
 
 		if (inner_ip6h->version != 6) {
-			update_stat(STAT_DROP_MALFORMED);
+			if (stats)
+				stats->drop_malformed++;
 			return XDP_DROP;
 		}
 
 		inner_proto = ETH_P_IPV6;
 	} else {
 		/* Unsupported protocol */
-		update_stat(STAT_PASS_NON_TUNNEL);
+		if (stats)
+			stats->pass_non_tunnel++;
 		return XDP_PASS;
 	}
 
 	/* Remove outer IPv6 header (40 bytes) */
-	return decapsulate(ctx, sizeof(struct ipv6hdr), inner_proto);
+	return decapsulate(ctx, sizeof(struct ipv6hdr), inner_proto, stats);
 }
 
 /*
  * Main XDP program entry point
  *
  * Packet flow:
- * 1. Parse Ethernet header
- * 2. Parse IP header (IPv4 or IPv6)
- * 3. Check for tunnel protocols
+ * 1. Lookup config and stats ONCE at the top (2 map lookups total)
+ * 2. Parse Ethernet header
+ * 3. Parse IP header (IPv4 or IPv6)
+ * 4. Check for tunnel protocols
  *    - IPv4: GRE (47), IPIP (4), IPv6-in-IPv4 (41)
  *    - IPv6: GRE (47), IPv4-in-IPv6 (4), IPv6-in-IPv6 (41)
- * 4. For tunnels: verify whitelist (IPv4 only), decapsulate
- * 5. Return XDP_PASS to chain to next program
+ * 5. For tunnels: verify whitelist, decapsulate
+ * 6. Return XDP_PASS to chain to next program
  */
 SEC("xdp")
 int xdp_tun_decap(struct xdp_md *ctx)
@@ -611,17 +646,32 @@ int xdp_tun_decap(struct xdp_md *ctx)
 	struct ethhdr *eth;
 	struct iphdr *iph;
 	struct tun_decap_config *cfg;
+	struct tun_decap_stats *stats;
 	int ip_hdr_len;
 
-	/* Update total packet counter */
-	update_stat(STAT_RX_TOTAL);
+	/*
+	 * Single config lookup for the entire packet path.
+	 * Previously this was called once here + once per update_stat().
+	 */
+	cfg = get_config();
 
 	/* Check if processing is disabled */
-	cfg = get_config();
-	if (cfg && cfg->disabled) {
-		/* Processing explicitly disabled, pass to next program */
+	if (cfg && cfg->disabled)
 		return XDP_PASS;
-	}
+
+	/*
+	 * Single stats lookup for the entire packet path.
+	 * All subsequent counter updates are direct field increments
+	 * with no additional map lookups.
+	 * Returns NULL if stats are disabled via config.
+	 */
+	stats = NULL;
+	if (!cfg || !cfg->disable_stats)
+		stats = get_stats();
+
+	/* Update total packet counter */
+	if (stats)
+		stats->rx_total++;
 
 	/* Parse Ethernet header */
 	eth = data;
@@ -653,31 +703,53 @@ int xdp_tun_decap(struct xdp_md *ctx)
 		case IPPROTO_GRE:
 			/* Check if GRE processing is disabled */
 			if (cfg && cfg->disable_gre) {
-				update_stat(STAT_PASS_NON_TUNNEL);
+				if (stats)
+					stats->pass_non_tunnel++;
 				return XDP_PASS;
 			}
-			return handle_gre(ctx, iph, ip_hdr_len, data_end);
+			/* Drop fragmented tunnel packets - can't decapsulate
+			 * without reassembly. Mask 0x3FFF covers MF flag and
+			 * fragment offset. */
+			if (iph->frag_off & bpf_htons(0x3FFF)) {
+				if (stats)
+					stats->drop_fragmented++;
+				return XDP_DROP;
+			}
+			return handle_gre(ctx, iph, ip_hdr_len, data_end, stats);
 
 		case IPPROTO_IPIP:
 			/* Check if IPIP processing is disabled */
 			if (cfg && cfg->disable_ipip) {
-				update_stat(STAT_PASS_NON_TUNNEL);
+				if (stats)
+					stats->pass_non_tunnel++;
 				return XDP_PASS;
 			}
-			return handle_ipip(ctx, iph, ip_hdr_len, data_end);
+			if (iph->frag_off & bpf_htons(0x3FFF)) {
+				if (stats)
+					stats->drop_fragmented++;
+				return XDP_DROP;
+			}
+			return handle_ipip(ctx, iph, ip_hdr_len, data_end, stats);
 
 		case IPPROTO_IPV6:
 			/* IPv6-in-IPv4 (protocol 41) */
 			/* Check if IPIP processing is disabled (covers IPv6-in-IPv4) */
 			if (cfg && cfg->disable_ipip) {
-				update_stat(STAT_PASS_NON_TUNNEL);
+				if (stats)
+					stats->pass_non_tunnel++;
 				return XDP_PASS;
 			}
-			return handle_ipv6_in_ipv4(ctx, iph, ip_hdr_len, data_end);
+			if (iph->frag_off & bpf_htons(0x3FFF)) {
+				if (stats)
+					stats->drop_fragmented++;
+				return XDP_DROP;
+			}
+			return handle_ipv6_in_ipv4(ctx, iph, ip_hdr_len, data_end, stats);
 
 		default:
 			/* Non-tunnel traffic, pass to next program in chain */
-			update_stat(STAT_PASS_NON_TUNNEL);
+			if (stats)
+				stats->pass_non_tunnel++;
 			return XDP_PASS;
 		}
 
@@ -694,29 +766,40 @@ int xdp_tun_decap(struct xdp_md *ctx)
 		if (ip6h->version != 6)
 			return XDP_PASS;
 
+		/* Drop fragmented IPv6 packets - can't decapsulate without
+		 * reassembly. Fragment extension header = next header 44. */
+		if (ip6h->nexthdr == IPPROTO_FRAGMENT) {
+			if (stats)
+				stats->drop_fragmented++;
+			return XDP_DROP;
+		}
+
 		/* Check for tunnel protocols in IPv6 next header */
 		switch (ip6h->nexthdr) {
 		case IPPROTO_GRE:
 			/* Check if GRE processing is disabled */
 			if (cfg && cfg->disable_gre) {
-				update_stat(STAT_PASS_NON_TUNNEL);
+				if (stats)
+					stats->pass_non_tunnel++;
 				return XDP_PASS;
 			}
-			return handle_gre_ipv6(ctx, ip6h, data_end);
+			return handle_gre_ipv6(ctx, ip6h, data_end, stats);
 
 		case IPPROTO_IPIP:
 		case IPPROTO_IPV6:
 			/* IPv4-in-IPv6 or IPv6-in-IPv6 */
 			/* Check if IPIP processing is disabled */
 			if (cfg && cfg->disable_ipip) {
-				update_stat(STAT_PASS_NON_TUNNEL);
+				if (stats)
+					stats->pass_non_tunnel++;
 				return XDP_PASS;
 			}
-			return handle_ipip_ipv6(ctx, ip6h, ip6h->nexthdr, data_end);
+			return handle_ipip_ipv6(ctx, ip6h, ip6h->nexthdr, data_end, stats);
 
 		default:
 			/* Non-tunnel traffic, pass to next program in chain */
-			update_stat(STAT_PASS_NON_TUNNEL);
+			if (stats)
+				stats->pass_non_tunnel++;
 			return XDP_PASS;
 		}
 

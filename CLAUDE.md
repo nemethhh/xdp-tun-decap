@@ -85,16 +85,21 @@ Integration tests use Docker containers with tcpdump-based verification. Tests v
 - Configured for libxdp multi-program support with priority 10 (runs early)
 
 **Packet Processing Flow**:
-1. Parse Ethernet and IPv4 headers
-2. Check protocol: GRE (47) or IPIP (4)
-3. Verify source IP against whitelist (per-CPU hash map lookup)
-4. Calculate decapsulation length (outer IP + tunnel header)
-5. Call `decapsulate()` which:
-   - Saves Ethernet header to stack
+1. Lookup config and stats maps ONCE at entry (2 map lookups total for entire packet)
+2. Parse Ethernet and IPv4/IPv6 headers
+3. Check protocol: GRE (47), IPIP (4), or IPv6-in-IPv4 (41)
+4. Verify source IP against whitelist (per-CPU hash map lookup)
+5. Calculate decapsulation length (outer IP + tunnel header)
+6. Call `decapsulate()` which uses **forward-copy technique**:
+   - Copies MAC addresses forward to new position (before adjust)
+   - Sets EtherType at new position
    - Calls `bpf_xdp_adjust_head()` to remove outer headers
-   - **CRITICAL**: Refetches `ctx->data` and `ctx->data_end` (all pointers invalidated)
-   - Restores Ethernet header at new position
-   - Updates EtherType to IPv4
+   - No post-adjust pointer refetch or restore needed
+
+**Performance Optimizations** (Katran-inspired):
+- **Single-struct stats**: All 14 counters in one map entry = 1 lookup instead of N
+- **Single config lookup**: Config checked once at entry, not per stat update
+- **Forward-copy decap**: MAC copied forward before adjust, avoids stack save/restore
 
 **GRE Handling** (`handle_gre()`):
 - Validates GRE version must be 0
@@ -124,16 +129,19 @@ Three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`):
    - Map name: `tun_decap_whitelist_v6`
 
 2. **Statistics** (`BPF_MAP_TYPE_PERCPU_ARRAY`):
-   - Per-CPU counters:
+   - **Single entry** containing `struct tun_decap_stats` with all 14 counters
+   - ONE `bpf_map_lookup_elem` per packet, then direct field increments
+   - Per-CPU counters (fields of `struct tun_decap_stats`):
      - `rx_total`: Total packets received
      - `rx_gre`, `rx_ipip`: GRE/IPIP packets received
      - `rx_ipv6_in_ipv4`: IPv6-in-IPv4 (protocol 41) packets
      - `rx_ipv6_outer`: IPv6 outer header packets
      - `rx_gre_ipv6_inner`, `rx_ipip_ipv6_inner`: IPv6 inner packet counters
+     - `rx_ipv6_in_ipv6`: IPv6-in-IPv6 tunnel packets
      - `decap_success`, `decap_failed`: Decapsulation results
-     - `drop_not_whitelisted`, `drop_malformed`: Drop reasons
+     - `drop_not_whitelisted`, `drop_malformed`, `drop_fragmented`: Drop reasons
      - `pass_non_tunnel`: Non-tunnel traffic passed through
-   - Indices defined in `enum stat_idx` (src/include/tun_decap.h:26)
+   - Structure defined in `struct tun_decap_stats` (src/include/tun_decap.h:30)
    - Statistics collection is **enabled by default** but can be disabled via config map
 
 3. **Config** (`BPF_MAP_TYPE_ARRAY`):
@@ -158,10 +166,11 @@ Three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`):
 ### Shared Types
 
 `src/include/tun_decap.h` defines types shared between BPF and userspace:
-- Statistics indices and names
-- Map structures
-- Configuration constants
-- Protocol numbers
+- `struct tun_decap_stats` - all 14 stat counters in a single struct
+- `struct stat_field_info` / `stat_fields[]` - names, descriptions, offsets (userspace)
+- `struct whitelist_value`, `struct ipv6_addr` - map key/value types
+- `struct tun_decap_config` - runtime configuration
+- Protocol numbers and constants
 
 ## BPF Verifier Constraints
 
@@ -280,7 +289,8 @@ sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
 # View current config
 sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_config
 
-# View statistics (per-CPU, userspace must aggregate)
+# View statistics (per-CPU struct, userspace must aggregate fields across CPUs)
+# Stats map has 1 entry (key=0) containing struct tun_decap_stats per CPU
 sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_stats
 ```
 
@@ -310,10 +320,13 @@ sudo rm -f /sys/fs/bpf/tun_decap_*
 
 ### Adding New Tunnel Protocol
 1. Add protocol number constant to `src/include/tun_decap.h`
-2. Create handler function `handle_<protocol>()` in `src/bpf/tun_decap.bpf.c`
-3. Add case to switch statement in `xdp_tun_decap()`
-4. Add statistics counters to `enum stat_idx`
-5. Add test cases to `src/test/test_decap.c` and integration tests
+2. Add counter field(s) to `struct tun_decap_stats` in `src/include/tun_decap.h`
+3. Add entry to `stat_fields[]` array and update `STAT_NUM_COUNTERS`
+4. Create handler function `handle_<protocol>()` in `src/bpf/tun_decap.bpf.c`
+   - Accept `struct tun_decap_stats *stats` parameter
+   - Use `if (stats) stats->field++` pattern for counter updates
+5. Add case to switch statement in `xdp_tun_decap()`
+6. Add test cases to `src/test/test_decap.c` and integration tests
 
 ### Modifying Packet Processing
 - Always check bounds before dereferencing: `if ((void *)(ptr + 1) > data_end)`

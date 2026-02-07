@@ -328,51 +328,49 @@ void test_config_inverted_semantics()
 	TEST_PASS(test_name);
 }
 
-void test_stat_idx_enum_values()
+void test_stats_structure()
 {
-	const char *test_name = "stat_idx enum values";
+	const char *test_name = "tun_decap_stats structure";
 
-	/* Verify enum starts at 0 */
-	ASSERT_EQ(STAT_RX_TOTAL, 0, "first stat should be index 0");
+	/* Verify struct size matches expected number of counters */
+	ASSERT_EQ(sizeof(struct tun_decap_stats), STAT_NUM_COUNTERS * sizeof(__u64),
+	          "stats struct should contain STAT_NUM_COUNTERS __u64 fields");
 
-	/* Verify sequential ordering */
-	ASSERT_EQ(STAT_RX_GRE, 1, "rx_gre should be index 1");
-	ASSERT_EQ(STAT_RX_IPIP, 2, "rx_ipip should be index 2");
+	/* Verify STAT_NUM_COUNTERS */
+	ASSERT_EQ(STAT_NUM_COUNTERS, 14, "should have 14 stat counters");
 
-	/* Verify STAT_MAX is last */
-	ASSERT_EQ(STAT_MAX, 12, "STAT_MAX should be 12 (after 12 stats)");
+	/* Verify first and last field offsets */
+	ASSERT_EQ(__builtin_offsetof(struct tun_decap_stats, rx_total), 0,
+	          "rx_total should be at offset 0");
+	ASSERT_EQ(__builtin_offsetof(struct tun_decap_stats, pass_non_tunnel),
+	          13 * sizeof(__u64), "pass_non_tunnel should be last field");
 
 	TEST_PASS(test_name);
 }
 
-void test_stat_names_array()
+void test_stat_fields_array()
 {
-	const char *test_name = "stat_names array completeness";
+	const char *test_name = "stat_fields array completeness";
 
-	/* Verify all stats have names */
-	for (int i = 0; i < STAT_MAX; i++) {
-		ASSERT(stat_names[i] != NULL, "stat %d should have a name", i);
-		ASSERT(strlen(stat_names[i]) > 0, "stat %d name should not be empty", i);
+	/* Verify all stats have names and descriptions */
+	for (int i = 0; i < STAT_NUM_COUNTERS; i++) {
+		ASSERT(stat_fields[i].name != NULL, "stat %d should have a name", i);
+		ASSERT(strlen(stat_fields[i].name) > 0, "stat %d name should not be empty", i);
+		ASSERT(stat_fields[i].description != NULL, "stat %d should have a description", i);
+		ASSERT(strlen(stat_fields[i].description) > 0,
+		       "stat %d description should not be empty", i);
 	}
 
 	/* Verify specific names */
-	ASSERT_EQ(strcmp(stat_names[STAT_RX_TOTAL], "rx_total"), 0,
-	          "rx_total name should match");
-	ASSERT_EQ(strcmp(stat_names[STAT_DECAP_SUCCESS], "decap_success"), 0,
+	ASSERT_EQ(strcmp(stat_fields[0].name, "rx_total"), 0,
+	          "first stat name should be rx_total");
+	ASSERT_EQ(strcmp(stat_fields[8].name, "decap_success"), 0,
 	          "decap_success name should match");
 
-	TEST_PASS(test_name);
-}
-
-void test_stat_descriptions_array()
-{
-	const char *test_name = "stat_descriptions array completeness";
-
-	/* Verify all stats have descriptions */
-	for (int i = 0; i < STAT_MAX; i++) {
-		ASSERT(stat_descriptions[i] != NULL, "stat %d should have a description", i);
-		ASSERT(strlen(stat_descriptions[i]) > 0,
-		       "stat %d description should not be empty", i);
+	/* Verify offsets are sequential and aligned */
+	for (int i = 0; i < STAT_NUM_COUNTERS; i++) {
+		ASSERT_EQ(stat_fields[i].offset, (size_t)(i * sizeof(__u64)),
+		          "stat %d offset should be i*8", i);
 	}
 
 	TEST_PASS(test_name);
@@ -475,9 +473,8 @@ int main(void)
 	test_ethertype_constants();
 	test_map_pin_paths();
 	test_whitelist_max_entries();
-	test_stat_idx_enum_values();
-	test_stat_names_array();
-	test_stat_descriptions_array();
+	test_stats_structure();
+	test_stat_fields_array();
 
 	/* Summary */
 	printf("\n");

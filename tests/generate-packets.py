@@ -387,6 +387,23 @@ def send_ipv6_large_payload(src_ip, dst_ip, inner_src, inner_dst, iface="eth0", 
     sendp(packet, iface=iface, count=count, verbose=False)
 
 
+def send_gre_fragmented(src_ip, dst_ip, inner_src, inner_dst, iface="eth0", count=1):
+    """Send fragmented GRE packet (MF flag set, should be dropped)."""
+    dst_mac = get_mac_for_ip(dst_ip, iface)
+    src_mac = get_if_hwaddr(iface)
+
+    outer = IP(src=src_ip, dst=dst_ip, proto=47, flags="MF", frag=0)
+    gre = GRE(proto=0x0800)  # IPv4
+    payload = Raw(b"TEST_GRE_FRAGMENTED_DROP")
+    inner = IP(src=inner_src, dst=inner_dst) / ICMP(type=8, code=0) / payload
+
+    packet = Ether(src=src_mac, dst=dst_mac) / outer / gre / inner
+
+    print(f"Sending {count} fragmented GRE packet(s): {src_ip} -> {dst_ip}")
+    print(f"  Payload marker: TEST_GRE_FRAGMENTED_DROP")
+    sendp(packet, iface=iface, count=count, verbose=False)
+
+
 def send_mixed_ipv4_ipv6_traffic(src_ipv4, dst_ipv4, src_ipv6, dst_ipv6, inner_src, inner_dst, iface="eth0"):
     """Send burst of mixed IPv4 and IPv6 tunnel traffic."""
     dst_mac = get_mac_for_ip(dst_ipv4, iface)
@@ -427,6 +444,7 @@ def main():
     parser.add_argument("--type", required=True,
                        choices=["gre-ipv4", "gre-ipv4-checksum", "gre-ipv4-key",
                                "gre-ipv4-seq", "gre-ipv4-all-flags", "gre-ipv4-routing",
+                               "gre-fragmented",
                                "ipip", "ipip-large",
                                "plain", "invalid-gre", "truncated-gre", "invalid-optional-fields",
                                "mixed-burst",
@@ -456,6 +474,7 @@ def main():
         "gre-ipv4-seq": send_gre_ipv4_with_sequence,
         "gre-ipv4-all-flags": send_gre_ipv4_all_flags,
         "gre-ipv4-routing": send_gre_ipv4_with_routing,
+        "gre-fragmented": send_gre_fragmented,
         "ipip": send_ipip_packet,
         "ipip-large": send_ipip_large_payload,
         "plain": lambda *a, **kw: send_plain_traffic(args.src, args.dst, args.iface, args.count),

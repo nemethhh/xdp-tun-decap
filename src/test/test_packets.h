@@ -1278,4 +1278,159 @@ static unsigned char pkt_ipv6_in_ipv6[] = {
 		0xb80d0120, 0x00000000, 0x00000000, 0x99000000                                     \
 	}
 
+/*
+ * Fragmented GRE packet from whitelisted source (10.0.0.1)
+ *
+ * Same as pkt_gre_whitelisted but with MF (More Fragments) flag set
+ * in the outer IPv4 header. frag_off = 0x2000 (MF=1, offset=0).
+ *
+ * Expected result: XDP_DROP (can't decapsulate fragmented packets)
+ */
+static unsigned char pkt_gre_fragmented_ipv4[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, /* Destination MAC */
+    0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, /* Source MAC */
+    0x08, 0x00,                         /* EtherType: IPv4 */
+
+    /* Outer IPv4 header (20 bytes) */
+    0x45,                   /* Version=4, IHL=5 (20 bytes) */
+    0x00,                   /* DSCP/ECN */
+    0x00, 0x40,             /* Total length: 64 bytes */
+    0x00, 0x01,             /* Identification */
+    0x20, 0x00,             /* Flags: MF=1, Fragment offset=0 */
+    0x40,                   /* TTL: 64 */
+    0x2f,                   /* Protocol: 47 (GRE) */
+    0x00, 0x00,             /* Header checksum (zeroed) */
+    0x0a, 0x00, 0x00, 0x01, /* Source IP: 10.0.0.1 (whitelisted) */
+    0xc0, 0xa8, 0x01, 0x01, /* Dest IP: 192.168.1.1 */
+
+    /* GRE header (4 bytes, no optional fields) */
+    0x00, 0x00, /* Flags: C=0, K=0, S=0, Ver=0 */
+    0x08, 0x00, /* Protocol: IPv4 (0x0800) */
+
+    /* Inner IPv4 header (20 bytes) */
+    0x45,                   /* Version=4, IHL=5 */
+    0x00,                   /* DSCP/ECN */
+    0x00, 0x28,             /* Total length: 40 bytes */
+    0x00, 0x02,             /* Identification */
+    0x00, 0x00,             /* Flags + Fragment offset */
+    0x40,                   /* TTL: 64 */
+    0x06,                   /* Protocol: 6 (TCP) */
+    0x00, 0x00,             /* Header checksum */
+    0xac, 0x10, 0x00, 0x01, /* Source IP: 172.16.0.1 */
+    0xac, 0x10, 0x00, 0x02, /* Dest IP: 172.16.0.2 */
+
+    /* TCP header (20 bytes) */
+    0x00, 0x50,             /* Source port: 80 */
+    0x00, 0x51,             /* Dest port: 81 */
+    0x00, 0x00, 0x00, 0x01, /* Sequence number */
+    0x00, 0x00, 0x00, 0x00, /* Acknowledgment number */
+    0x50, 0x02,             /* Data offset=5, SYN flag */
+    0xff, 0xff,             /* Window size */
+    0x00, 0x00,             /* Checksum */
+    0x00, 0x00,             /* Urgent pointer */
+};
+
+#define PKT_GRE_FRAGMENTED_IPV4_LEN sizeof(pkt_gre_fragmented_ipv4)
+
+/*
+ * Fragmented IPIP packet from whitelisted source (10.0.0.2)
+ *
+ * Same as pkt_ipip_whitelisted but with MF (More Fragments) flag set.
+ * frag_off = 0x2000 (MF=1, offset=0).
+ *
+ * Expected result: XDP_DROP
+ */
+static unsigned char pkt_ipip_fragmented_ipv4[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+    0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+    0x08, 0x00,
+
+    /* Outer IPv4 header (20 bytes) */
+    0x45,
+    0x00,
+    0x00, 0x3c,             /* Total length: 60 bytes */
+    0x00, 0x01,
+    0x20, 0x00,             /* Flags: MF=1, Fragment offset=0 */
+    0x40,
+    0x04,                   /* Protocol: 4 (IPIP) */
+    0x00, 0x00,
+    0x0a, 0x00, 0x00, 0x02, /* Source IP: 10.0.0.2 (whitelisted) */
+    0xc0, 0xa8, 0x01, 0x01,
+
+    /* Inner IPv4 header (20 bytes) */
+    0x45, 0x00, 0x00, 0x28,
+    0x00, 0x02, 0x00, 0x00,
+    0x40, 0x06, 0x00, 0x00,
+    0xac, 0x10, 0x00, 0x01,
+    0xac, 0x10, 0x00, 0x02,
+
+    /* TCP header (20 bytes) */
+    0x00, 0x50, 0x00, 0x51,
+    0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00,
+    0x50, 0x02, 0xff, 0xff,
+    0x00, 0x00, 0x00, 0x00,
+};
+
+#define PKT_IPIP_FRAGMENTED_IPV4_LEN sizeof(pkt_ipip_fragmented_ipv4)
+
+/*
+ * IPv6 packet with Fragment extension header from whitelisted source
+ *
+ * Structure:
+ * [Ethernet: 14 bytes]
+ * [Outer IPv6: 40 bytes, next_hdr=44 (Fragment), src=2001:db8::1]
+ * [Fragment ext header: 8 bytes]
+ * [Inner IPv4: 20 bytes]
+ * [TCP: 20 bytes]
+ *
+ * Expected result: XDP_DROP (fragmented IPv6 can't be decapsulated)
+ */
+static unsigned char pkt_ipv6_fragment_hdr[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+    0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+    0x86, 0xdd,             /* EtherType: IPv6 */
+
+    /* Outer IPv6 header (40 bytes) */
+    0x60, 0x00, 0x00, 0x00, /* Version=6, Traffic class, Flow label */
+    0x00, 0x30,             /* Payload length: 48 bytes */
+    0x2c,                   /* Next header: 44 (Fragment) */
+    0x40,                   /* Hop limit: 64 */
+    /* Source address: 2001:db8::1 (whitelisted) */
+    0x20, 0x01, 0x0d, 0xb8,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01,
+    /* Destination address: 2001:db8::100 */
+    0x20, 0x01, 0x0d, 0xb8,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x00,
+
+    /* Fragment extension header (8 bytes) */
+    0x2f,                   /* Next header: 47 (GRE) - what follows after reassembly */
+    0x00,                   /* Reserved */
+    0x00, 0x01,             /* Fragment offset=0, MF=1 */
+    0x00, 0x00, 0x12, 0x34, /* Identification */
+
+    /* Inner IPv4 header (20 bytes) */
+    0x45, 0x00, 0x00, 0x28,
+    0x00, 0x02, 0x00, 0x00,
+    0x40, 0x06, 0x00, 0x00,
+    0xac, 0x10, 0x00, 0x01,
+    0xac, 0x10, 0x00, 0x02,
+
+    /* TCP header (20 bytes) */
+    0x00, 0x50, 0x00, 0x51,
+    0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00,
+    0x50, 0x02, 0xff, 0xff,
+    0x00, 0x00, 0x00, 0x00,
+};
+
+#define PKT_IPV6_FRAGMENT_HDR_LEN sizeof(pkt_ipv6_fragment_hdr)
+
 #endif /* __TEST_PACKETS_H */

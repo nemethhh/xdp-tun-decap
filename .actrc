@@ -3,7 +3,7 @@
 -P ubuntu-22.04=ubuntu:22.04
 
 # Add Linux capabilities for BPF development
---container-options --cap-add=SYS_ADMIN --cap-add=BPF --cap-add=NET_ADMIN
+# --container-options --cap-add=SYS_ADMIN --cap-add=BPF --cap-add=NET_ADMIN
 
 # Mount kernel resources for BPF development
 # - /sys/kernel/btf: Kernel BTF information for CO-RE

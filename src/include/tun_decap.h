@@ -20,24 +20,32 @@
 #endif
 
 /*
- * Statistics counter indices
- * Used with the per-CPU stats array map
+ * Statistics structure - all counters in a single map entry
+ *
+ * Using a single struct instead of per-counter array entries
+ * reduces BPF map lookups from N (one per stat update) to 1.
+ * Each stat update becomes a direct memory write instead of
+ * a bpf_map_lookup_elem() call (~15-50ns savings per lookup).
  */
-enum stat_idx {
-	STAT_RX_TOTAL = 0,         /* Total packets received */
-	STAT_RX_GRE,               /* GRE packets received */
-	STAT_RX_IPIP,              /* IPIP packets received */
-	STAT_RX_IPV6_IN_IPV4,      /* IPv6-in-IPv4 packets received */
-	STAT_RX_IPV6_OUTER,        /* IPv6 outer header packets received */
-	STAT_RX_GRE_IPV6_INNER,    /* GRE with IPv6 inner packet */
-	STAT_RX_IPIP_IPV6_INNER,   /* IPIP with IPv6 inner packet */
-	STAT_DECAP_SUCCESS,        /* Successfully decapsulated packets */
-	STAT_DECAP_FAILED,         /* Decapsulation failures (adjust_head error) */
-	STAT_DROP_NOT_WHITELISTED, /* Dropped: source IP not in whitelist */
-	STAT_DROP_MALFORMED,       /* Dropped: malformed tunnel packet */
-	STAT_PASS_NON_TUNNEL,      /* Passed: non-tunnel traffic to next prog */
-	STAT_MAX                   /* Sentinel - must be last */
+struct tun_decap_stats {
+	__u64 rx_total;           /* Total packets received */
+	__u64 rx_gre;             /* GRE packets received */
+	__u64 rx_ipip;            /* IPIP packets received */
+	__u64 rx_ipv6_in_ipv4;    /* IPv6-in-IPv4 packets received */
+	__u64 rx_ipv6_outer;      /* IPv6 outer header packets received */
+	__u64 rx_gre_ipv6_inner;  /* GRE with IPv6 inner packet */
+	__u64 rx_ipip_ipv6_inner; /* IPIP with IPv6 inner packet */
+	__u64 rx_ipv6_in_ipv6;    /* IPv6-in-IPv6 tunnel packets received */
+	__u64 decap_success;      /* Successfully decapsulated packets */
+	__u64 decap_failed;       /* Decapsulation failures (adjust_head error) */
+	__u64 drop_not_whitelisted; /* Dropped: source IP not in whitelist */
+	__u64 drop_malformed;     /* Dropped: malformed tunnel packet */
+	__u64 drop_fragmented;    /* Dropped: fragmented outer packet */
+	__u64 pass_non_tunnel;    /* Passed: non-tunnel traffic to next prog */
 };
+
+/* Number of counters in tun_decap_stats (for userspace iteration) */
+#define STAT_NUM_COUNTERS 14
 
 /*
  * Whitelist value structure
@@ -112,6 +120,10 @@ struct tun_decap_config {
 #define IPPROTO_GRE 47
 #endif
 
+#ifndef IPPROTO_FRAGMENT
+#define IPPROTO_FRAGMENT 44
+#endif
+
 /*
  * Ethernet protocol types
  */
@@ -124,38 +136,36 @@ struct tun_decap_config {
 #endif
 
 /*
- * Helper macros for statistics names (userspace)
+ * Helper structures for statistics names (userspace)
  */
 #ifndef __BPF__
-static const char *stat_names[] __attribute__((unused)) = {
-    [STAT_RX_TOTAL] = "rx_total",
-    [STAT_RX_GRE] = "rx_gre",
-    [STAT_RX_IPIP] = "rx_ipip",
-    [STAT_RX_IPV6_IN_IPV4] = "rx_ipv6_in_ipv4",
-    [STAT_RX_IPV6_OUTER] = "rx_ipv6_outer",
-    [STAT_RX_GRE_IPV6_INNER] = "rx_gre_ipv6_inner",
-    [STAT_RX_IPIP_IPV6_INNER] = "rx_ipip_ipv6_inner",
-    [STAT_DECAP_SUCCESS] = "decap_success",
-    [STAT_DECAP_FAILED] = "decap_failed",
-    [STAT_DROP_NOT_WHITELISTED] = "drop_not_whitelisted",
-    [STAT_DROP_MALFORMED] = "drop_malformed",
-    [STAT_PASS_NON_TUNNEL] = "pass_non_tunnel",
+
+struct stat_field_info {
+	const char *name;
+	const char *description;
+	size_t offset; /* offset within tun_decap_stats struct */
 };
 
-static const char *stat_descriptions[] = {
-    [STAT_RX_TOTAL] = "Total packets received",
-    [STAT_RX_GRE] = "GRE tunnel packets received",
-    [STAT_RX_IPIP] = "IPIP tunnel packets received",
-    [STAT_RX_IPV6_IN_IPV4] = "IPv6-in-IPv4 tunnel packets received",
-    [STAT_RX_IPV6_OUTER] = "Packets with IPv6 outer header",
-    [STAT_RX_GRE_IPV6_INNER] = "GRE with IPv6 inner packet",
-    [STAT_RX_IPIP_IPV6_INNER] = "IPIP with IPv6 inner packet",
-    [STAT_DECAP_SUCCESS] = "Packets successfully decapsulated",
-    [STAT_DECAP_FAILED] = "Decapsulation failures",
-    [STAT_DROP_NOT_WHITELISTED] = "Dropped (source not whitelisted)",
-    [STAT_DROP_MALFORMED] = "Dropped (malformed packet)",
-    [STAT_PASS_NON_TUNNEL] = "Non-tunnel traffic passed",
+#define STAT_FIELD(field, desc) \
+	{ #field, desc, __builtin_offsetof(struct tun_decap_stats, field) }
+
+static const struct stat_field_info stat_fields[] __attribute__((unused)) = {
+    STAT_FIELD(rx_total, "Total packets received"),
+    STAT_FIELD(rx_gre, "GRE tunnel packets received"),
+    STAT_FIELD(rx_ipip, "IPIP tunnel packets received"),
+    STAT_FIELD(rx_ipv6_in_ipv4, "IPv6-in-IPv4 tunnel packets received"),
+    STAT_FIELD(rx_ipv6_outer, "Packets with IPv6 outer header"),
+    STAT_FIELD(rx_gre_ipv6_inner, "GRE with IPv6 inner packet"),
+    STAT_FIELD(rx_ipip_ipv6_inner, "IPIP with IPv6 inner packet"),
+    STAT_FIELD(rx_ipv6_in_ipv6, "IPv6-in-IPv6 tunnel packets received"),
+    STAT_FIELD(decap_success, "Packets successfully decapsulated"),
+    STAT_FIELD(decap_failed, "Decapsulation failures"),
+    STAT_FIELD(drop_not_whitelisted, "Dropped (source not whitelisted)"),
+    STAT_FIELD(drop_malformed, "Dropped (malformed packet)"),
+    STAT_FIELD(drop_fragmented, "Dropped (fragmented outer packet)"),
+    STAT_FIELD(pass_non_tunnel, "Non-tunnel traffic passed"),
 };
+
 #endif /* __BPF__ */
 
 #endif /* __TUN_DECAP_H */

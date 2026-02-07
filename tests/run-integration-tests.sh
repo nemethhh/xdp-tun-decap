@@ -907,6 +907,29 @@ else
     print_fail "IPv6 large payload failed - inner IP not visible"
 fi
 
+print_section "Test 29: Fragmented GRE Packet (Should Drop)"
+run_test
+print_test "Sending fragmented GRE packet (MF flag set)"
+
+start_capture ""
+
+docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+    --type gre-fragmented \
+    --src $TUNNEL_SOURCE_IP \
+    --dst $XDP_TARGET_IP \
+    --inner-src $INNER_CLIENT_IP \
+    --count 5
+
+sleep 2
+stop_capture
+
+# Verify that the inner payload is NOT visible (fragmented packet should be dropped)
+if verify_not_decapsulated "TEST_GRE_FRAGMENTED_DROP"; then
+    print_pass "Fragmented GRE packets dropped successfully (payload not visible)"
+else
+    print_fail "Fragmented GRE packets were incorrectly decapsulated"
+fi
+
 print_section "Packet Capture Summary"
 echo "Final capture statistics (last capture file):"
 docker exec $XDP_TARGET tcpdump -n -r $CAPTURE_FILE 2>&1 | tail -10 || true

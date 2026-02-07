@@ -168,22 +168,33 @@ static int whitelist_v6_clear(int map_fd)
 }
 
 /*
- * Read and aggregate per-CPU statistics
+ * Read and aggregate a specific stat field from per-CPU stats struct
+ *
+ * @map_fd: Stats map file descriptor
+ * @offset: Byte offset of the __u64 field within tun_decap_stats
+ * @return: Aggregated value across all CPUs
  */
-static __u64 read_stat(int map_fd, __u32 idx)
+static __u64 read_stat_field(int map_fd, size_t offset)
 {
 	int ncpus = libbpf_num_possible_cpus();
-	__u64 values[ncpus];
+	struct tun_decap_stats values[ncpus];
+	__u32 key = 0;
 	__u64 total = 0;
 
-	if (bpf_map_lookup_elem(map_fd, &idx, values) < 0)
+	if (bpf_map_lookup_elem(map_fd, &key, values) < 0)
 		return 0;
 
 	for (int i = 0; i < ncpus; i++)
-		total += values[i];
+		total += *(__u64 *)((char *)&values[i] + offset);
 
 	return total;
 }
+
+/*
+ * Convenience macros for reading specific stats
+ */
+#define read_stat(map_fd, field) \
+	read_stat_field(map_fd, __builtin_offsetof(struct tun_decap_stats, field))
 
 /*
  * Reset all statistics to zero
@@ -191,12 +202,11 @@ static __u64 read_stat(int map_fd, __u32 idx)
 static void reset_stats(int map_fd)
 {
 	int ncpus = libbpf_num_possible_cpus();
-	__u64 zeros[ncpus];
+	struct tun_decap_stats zeros[ncpus];
+	__u32 key = 0;
 
 	memset(zeros, 0, sizeof(zeros));
-
-	for (__u32 i = 0; i < STAT_MAX; i++)
-		bpf_map_update_elem(map_fd, &i, zeros, BPF_ANY);
+	bpf_map_update_elem(map_fd, &key, zeros, BPF_ANY);
 }
 
 /*
@@ -274,7 +284,7 @@ static void test_gre_blocked(struct tun_decap_bpf *skel)
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
 
 	/* Get initial drop count */
-	__u64 drops_before = read_stat(stats_fd, STAT_DROP_NOT_WHITELISTED);
+	__u64 drops_before = read_stat(stats_fd, drop_not_whitelisted);
 
 	/* Run test with packet from 11.0.0.1 */
 	err = run_xdp_test(prog_fd, pkt_gre_blocked, PKT_GRE_BLOCKED_LEN, &retval, NULL, NULL);
@@ -292,7 +302,7 @@ static void test_gre_blocked(struct tun_decap_bpf *skel)
 	}
 
 	/* Verify drop counter incremented */
-	__u64 drops_after = read_stat(stats_fd, STAT_DROP_NOT_WHITELISTED);
+	__u64 drops_after = read_stat(stats_fd, drop_not_whitelisted);
 	if (drops_after <= drops_before) {
 		TEST_FAIL(name, "Drop counter not incremented");
 		return;
@@ -843,7 +853,7 @@ static void test_ipv6_outer_blocked(struct tun_decap_bpf *skel)
 	whitelist_v6_add(wl_v6_fd, ipv6_blocked);
 
 	/* Get initial drop count */
-	__u64 drops_before = read_stat(stats_fd, STAT_DROP_NOT_WHITELISTED);
+	__u64 drops_before = read_stat(stats_fd, drop_not_whitelisted);
 
 	/* Run test with IPv6 outer packet from 2001:db8::1 (not whitelisted) */
 	err = run_xdp_test(prog_fd, pkt_ipv6_outer_gre_ipv4, PKT_IPV6_OUTER_GRE_IPV4_LEN, &retval,
@@ -862,9 +872,129 @@ static void test_ipv6_outer_blocked(struct tun_decap_bpf *skel)
 	}
 
 	/* Verify drop counter incremented */
-	__u64 drops_after = read_stat(stats_fd, STAT_DROP_NOT_WHITELISTED);
+	__u64 drops_after = read_stat(stats_fd, drop_not_whitelisted);
 	if (drops_after <= drops_before) {
 		TEST_FAIL(name, "Drop counter not incremented");
+		return;
+	}
+
+	TEST_PASS(name);
+}
+
+/*
+ * Test: Fragmented GRE packet is dropped
+ */
+static void test_gre_fragmented_drop(struct tun_decap_bpf *skel)
+{
+	const char *name = "GRE drop (fragmented)";
+	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
+	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
+	__u32 retval;
+	int err;
+
+	/* Ensure source is whitelisted - we're testing fragment drop, not whitelist */
+	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
+
+	__u64 frag_drops_before = read_stat(stats_fd, drop_fragmented);
+
+	err = run_xdp_test(prog_fd, pkt_gre_fragmented_ipv4, PKT_GRE_FRAGMENTED_IPV4_LEN,
+	                   &retval, NULL, NULL);
+	if (err < 0) {
+		TEST_FAIL(name, "bpf_prog_test_run failed");
+		return;
+	}
+
+	if (retval != XDP_DROP) {
+		char buf[64];
+		snprintf(buf, sizeof(buf), "Expected XDP_DROP(%d), got %d", XDP_DROP, retval);
+		TEST_FAIL(name, buf);
+		return;
+	}
+
+	__u64 frag_drops_after = read_stat(stats_fd, drop_fragmented);
+	if (frag_drops_after <= frag_drops_before) {
+		TEST_FAIL(name, "drop_fragmented counter not incremented");
+		return;
+	}
+
+	TEST_PASS(name);
+}
+
+/*
+ * Test: Fragmented IPIP packet is dropped
+ */
+static void test_ipip_fragmented_drop(struct tun_decap_bpf *skel)
+{
+	const char *name = "IPIP drop (fragmented)";
+	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
+	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
+	__u32 retval;
+	int err;
+
+	whitelist_add(wl_fd, TEST_IP_WHITELISTED_2);
+
+	__u64 frag_drops_before = read_stat(stats_fd, drop_fragmented);
+
+	err = run_xdp_test(prog_fd, pkt_ipip_fragmented_ipv4, PKT_IPIP_FRAGMENTED_IPV4_LEN,
+	                   &retval, NULL, NULL);
+	if (err < 0) {
+		TEST_FAIL(name, "bpf_prog_test_run failed");
+		return;
+	}
+
+	if (retval != XDP_DROP) {
+		char buf[64];
+		snprintf(buf, sizeof(buf), "Expected XDP_DROP(%d), got %d", XDP_DROP, retval);
+		TEST_FAIL(name, buf);
+		return;
+	}
+
+	__u64 frag_drops_after = read_stat(stats_fd, drop_fragmented);
+	if (frag_drops_after <= frag_drops_before) {
+		TEST_FAIL(name, "drop_fragmented counter not incremented");
+		return;
+	}
+
+	TEST_PASS(name);
+}
+
+/*
+ * Test: IPv6 packet with Fragment extension header is dropped
+ */
+static void test_ipv6_fragment_ext_drop(struct tun_decap_bpf *skel)
+{
+	const char *name = "IPv6 drop (fragment extension header)";
+	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
+	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
+	__u32 retval;
+	int err;
+
+	/* Ensure IPv6 source is whitelisted */
+	__u32 ipv6_addr[] = TEST_IPV6_WHITELISTED_1;
+	whitelist_v6_add(wl_v6_fd, ipv6_addr);
+
+	__u64 frag_drops_before = read_stat(stats_fd, drop_fragmented);
+
+	err = run_xdp_test(prog_fd, pkt_ipv6_fragment_hdr, PKT_IPV6_FRAGMENT_HDR_LEN,
+	                   &retval, NULL, NULL);
+	if (err < 0) {
+		TEST_FAIL(name, "bpf_prog_test_run failed");
+		return;
+	}
+
+	if (retval != XDP_DROP) {
+		char buf[64];
+		snprintf(buf, sizeof(buf), "Expected XDP_DROP(%d), got %d", XDP_DROP, retval);
+		TEST_FAIL(name, buf);
+		return;
+	}
+
+	__u64 frag_drops_after = read_stat(stats_fd, drop_fragmented);
+	if (frag_drops_after <= frag_drops_before) {
+		TEST_FAIL(name, "drop_fragmented counter not incremented");
 		return;
 	}
 
@@ -880,20 +1010,18 @@ static void test_statistics(struct tun_decap_bpf *skel)
 	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 
 	/* Read statistics after all previous tests */
-	__u64 total = read_stat(stats_fd, STAT_RX_TOTAL);
-	__u64 gre = read_stat(stats_fd, STAT_RX_GRE);
-	__u64 ipip = read_stat(stats_fd, STAT_RX_IPIP);
-	__u64 decap_ok = read_stat(stats_fd, STAT_DECAP_SUCCESS);
-	__u64 drops_wl = read_stat(stats_fd, STAT_DROP_NOT_WHITELISTED);
-	__u64 pass_non = read_stat(stats_fd, STAT_PASS_NON_TUNNEL);
+	__u64 total = read_stat(stats_fd, rx_total);
+	__u64 gre = read_stat(stats_fd, rx_gre);
+	__u64 ipip = read_stat(stats_fd, rx_ipip);
+	__u64 decap_ok = read_stat(stats_fd, decap_success);
+	__u64 drops_wl = read_stat(stats_fd, drop_not_whitelisted);
+	__u64 pass_non = read_stat(stats_fd, pass_non_tunnel);
 
 	printf("\n  Statistics summary:\n");
-	printf("    %-25s %llu\n", stat_descriptions[STAT_RX_TOTAL], (unsigned long long)total);
-	printf("    %-25s %llu\n", stat_descriptions[STAT_RX_GRE], (unsigned long long)gre);
-	printf("    %-25s %llu\n", stat_descriptions[STAT_RX_IPIP], (unsigned long long)ipip);
-	printf("    %-25s %llu\n", stat_descriptions[STAT_DECAP_SUCCESS], (unsigned long long)decap_ok);
-	printf("    %-25s %llu\n", stat_descriptions[STAT_DROP_NOT_WHITELISTED], (unsigned long long)drops_wl);
-	printf("    %-25s %llu\n", stat_descriptions[STAT_PASS_NON_TUNNEL], (unsigned long long)pass_non);
+	for (int i = 0; i < STAT_NUM_COUNTERS; i++) {
+		__u64 val = read_stat_field(stats_fd, stat_fields[i].offset);
+		printf("    %-25s %llu\n", stat_fields[i].description, (unsigned long long)val);
+	}
 
 	/* Verify reasonable values */
 	if (total == 0) {
@@ -915,6 +1043,10 @@ static void test_statistics(struct tun_decap_bpf *skel)
 		TEST_FAIL(name, "No successful decaps counted");
 		return;
 	}
+
+	/* Suppress unused variable warnings */
+	(void)drops_wl;
+	(void)pass_non;
 
 	TEST_PASS(name);
 }
@@ -1026,6 +1158,11 @@ int main(int argc, char **argv)
 	test_ipv4_in_ipv6(skel);
 	test_ipv6_in_ipv6(skel);
 	test_ipv6_outer_blocked(skel);
+
+	/* Fragment drop tests */
+	test_gre_fragmented_drop(skel);
+	test_ipip_fragmented_drop(skel);
+	test_ipv6_fragment_ext_drop(skel);
 
 	/* Pass-through and malformed packet tests */
 	test_tcp_passthrough(skel);

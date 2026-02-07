@@ -39,6 +39,15 @@ else
     XDP_INCLUDES :=
 endif
 
+# Statistics support (default: enabled)
+# Use STATS=0 to compile without statistics for maximum performance
+STATS ?= 1
+ifeq ($(STATS),1)
+    STATS_DEFINES := -DENABLE_STATS
+else
+    STATS_DEFINES :=
+endif
+
 # BPF compilation flags
 # -O2: Required for BPF (verifier needs optimized code)
 # -g: Generate BTF debug info for CO-RE
@@ -49,12 +58,14 @@ BPF_CFLAGS := -O2 -g -Wall -Wextra \
               -mcpu=v3 \
               -D__TARGET_ARCH_$(ARCH) \
               $(XDP_DEFINES) \
+              $(STATS_DEFINES) \
               -I$(BPF_DIR) \
               -I$(INCLUDE_DIR) \
               $(XDP_INCLUDES)
 
 # Userspace compilation flags
 USER_CFLAGS := -O2 -g -Wall -Wextra \
+               $(STATS_DEFINES) \
                -I$(INCLUDE_DIR) \
                -I$(BUILD_DIR)
 
@@ -295,6 +306,9 @@ help:
 	@echo "  clean             - Remove build artifacts"
 	@echo "  rebuild           - Clean and rebuild"
 	@echo "  help              - Show this help"
+	@echo ""
+	@echo "Build Options:"
+	@echo "  STATS=0           - Compile without statistics (max performance)"
 	@echo ""
 	@echo "Requirements:"
 	@echo "  - Linux kernel 5.17+ with CONFIG_DEBUG_INFO_BTF=y"

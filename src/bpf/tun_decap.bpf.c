@@ -109,6 +109,7 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } tun_decap_whitelist_v6 SEC(".maps");
 
+#ifdef ENABLE_STATS
 /*
  * Per-CPU statistics - single struct per entry
  *
@@ -123,6 +124,7 @@ struct {
 	__type(value, struct tun_decap_stats);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } tun_decap_stats SEC(".maps");
+#endif
 
 /*
  * Runtime configuration map
@@ -149,6 +151,7 @@ static __always_inline struct tun_decap_config *get_config(void)
 	return bpf_map_lookup_elem(&tun_decap_config, &key);
 }
 
+#ifdef ENABLE_STATS
 /*
  * Get per-CPU statistics struct (called once per packet)
  *
@@ -162,6 +165,7 @@ static __always_inline struct tun_decap_stats *get_stats(void)
 	__u32 key = 0;
 	return bpf_map_lookup_elem(&tun_decap_stats, &key);
 }
+#endif
 
 /*
  * Check if IPv4 source IP is in whitelist
@@ -646,7 +650,7 @@ int xdp_tun_decap(struct xdp_md *ctx)
 	struct ethhdr *eth;
 	struct iphdr *iph;
 	struct tun_decap_config *cfg;
-	struct tun_decap_stats *stats;
+	struct tun_decap_stats *stats = NULL;
 	int ip_hdr_len;
 
 	/*
@@ -659,19 +663,20 @@ int xdp_tun_decap(struct xdp_md *ctx)
 	if (cfg && cfg->disabled)
 		return XDP_PASS;
 
+#ifdef ENABLE_STATS
 	/*
 	 * Single stats lookup for the entire packet path.
 	 * All subsequent counter updates are direct field increments
 	 * with no additional map lookups.
 	 * Returns NULL if stats are disabled via config.
 	 */
-	stats = NULL;
 	if (!cfg || !cfg->disable_stats)
 		stats = get_stats();
 
 	/* Update total packet counter */
 	if (stats)
 		stats->rx_total++;
+#endif
 
 	/* Parse Ethernet header */
 	eth = data;

@@ -167,6 +167,7 @@ static int whitelist_v6_clear(int map_fd)
 	return 0;
 }
 
+#ifdef ENABLE_STATS
 /*
  * Read and aggregate a specific stat field from per-CPU stats struct
  *
@@ -208,6 +209,7 @@ static void reset_stats(int map_fd)
 	memset(zeros, 0, sizeof(zeros));
 	bpf_map_update_elem(map_fd, &key, zeros, BPF_ANY);
 }
+#endif /* ENABLE_STATS */
 
 /*
  * Test: GRE decapsulation with whitelisted source
@@ -274,7 +276,6 @@ static void test_gre_blocked(struct tun_decap_bpf *skel)
 	const char *name = "GRE drop (non-whitelisted)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
 	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
-	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u32 retval;
 	int err;
 
@@ -283,8 +284,10 @@ static void test_gre_blocked(struct tun_decap_bpf *skel)
 	/* Re-add only 10.0.0.x, not 11.0.0.x */
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
 
-	/* Get initial drop count */
+#ifdef ENABLE_STATS
+	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u64 drops_before = read_stat(stats_fd, drop_not_whitelisted);
+#endif
 
 	/* Run test with packet from 11.0.0.1 */
 	err = run_xdp_test(prog_fd, pkt_gre_blocked, PKT_GRE_BLOCKED_LEN, &retval, NULL, NULL);
@@ -301,12 +304,14 @@ static void test_gre_blocked(struct tun_decap_bpf *skel)
 		return;
 	}
 
+#ifdef ENABLE_STATS
 	/* Verify drop counter incremented */
 	__u64 drops_after = read_stat(stats_fd, drop_not_whitelisted);
 	if (drops_after <= drops_before) {
 		TEST_FAIL(name, "Drop counter not incremented");
 		return;
 	}
+#endif
 
 	TEST_PASS(name);
 }
@@ -842,7 +847,6 @@ static void test_ipv6_outer_blocked(struct tun_decap_bpf *skel)
 	const char *name = "IPv6 outer drop (non-whitelisted)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
 	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
-	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u32 retval;
 	int err;
 
@@ -852,8 +856,10 @@ static void test_ipv6_outer_blocked(struct tun_decap_bpf *skel)
 	__u32 ipv6_blocked[] = TEST_IPV6_BLOCKED;
 	whitelist_v6_add(wl_v6_fd, ipv6_blocked);
 
-	/* Get initial drop count */
+#ifdef ENABLE_STATS
+	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u64 drops_before = read_stat(stats_fd, drop_not_whitelisted);
+#endif
 
 	/* Run test with IPv6 outer packet from 2001:db8::1 (not whitelisted) */
 	err = run_xdp_test(prog_fd, pkt_ipv6_outer_gre_ipv4, PKT_IPV6_OUTER_GRE_IPV4_LEN, &retval,
@@ -871,12 +877,14 @@ static void test_ipv6_outer_blocked(struct tun_decap_bpf *skel)
 		return;
 	}
 
+#ifdef ENABLE_STATS
 	/* Verify drop counter incremented */
 	__u64 drops_after = read_stat(stats_fd, drop_not_whitelisted);
 	if (drops_after <= drops_before) {
 		TEST_FAIL(name, "Drop counter not incremented");
 		return;
 	}
+#endif
 
 	TEST_PASS(name);
 }
@@ -889,14 +897,16 @@ static void test_gre_fragmented_drop(struct tun_decap_bpf *skel)
 	const char *name = "GRE drop (fragmented)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
 	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
-	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u32 retval;
 	int err;
 
 	/* Ensure source is whitelisted - we're testing fragment drop, not whitelist */
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
 
+#ifdef ENABLE_STATS
+	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u64 frag_drops_before = read_stat(stats_fd, drop_fragmented);
+#endif
 
 	err = run_xdp_test(prog_fd, pkt_gre_fragmented_ipv4, PKT_GRE_FRAGMENTED_IPV4_LEN,
 	                   &retval, NULL, NULL);
@@ -912,11 +922,13 @@ static void test_gre_fragmented_drop(struct tun_decap_bpf *skel)
 		return;
 	}
 
+#ifdef ENABLE_STATS
 	__u64 frag_drops_after = read_stat(stats_fd, drop_fragmented);
 	if (frag_drops_after <= frag_drops_before) {
 		TEST_FAIL(name, "drop_fragmented counter not incremented");
 		return;
 	}
+#endif
 
 	TEST_PASS(name);
 }
@@ -929,13 +941,15 @@ static void test_ipip_fragmented_drop(struct tun_decap_bpf *skel)
 	const char *name = "IPIP drop (fragmented)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
 	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
-	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u32 retval;
 	int err;
 
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_2);
 
+#ifdef ENABLE_STATS
+	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u64 frag_drops_before = read_stat(stats_fd, drop_fragmented);
+#endif
 
 	err = run_xdp_test(prog_fd, pkt_ipip_fragmented_ipv4, PKT_IPIP_FRAGMENTED_IPV4_LEN,
 	                   &retval, NULL, NULL);
@@ -951,11 +965,13 @@ static void test_ipip_fragmented_drop(struct tun_decap_bpf *skel)
 		return;
 	}
 
+#ifdef ENABLE_STATS
 	__u64 frag_drops_after = read_stat(stats_fd, drop_fragmented);
 	if (frag_drops_after <= frag_drops_before) {
 		TEST_FAIL(name, "drop_fragmented counter not incremented");
 		return;
 	}
+#endif
 
 	TEST_PASS(name);
 }
@@ -968,7 +984,6 @@ static void test_ipv6_fragment_ext_drop(struct tun_decap_bpf *skel)
 	const char *name = "IPv6 drop (fragment extension header)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
 	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
-	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u32 retval;
 	int err;
 
@@ -976,7 +991,10 @@ static void test_ipv6_fragment_ext_drop(struct tun_decap_bpf *skel)
 	__u32 ipv6_addr[] = TEST_IPV6_WHITELISTED_1;
 	whitelist_v6_add(wl_v6_fd, ipv6_addr);
 
+#ifdef ENABLE_STATS
+	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
 	__u64 frag_drops_before = read_stat(stats_fd, drop_fragmented);
+#endif
 
 	err = run_xdp_test(prog_fd, pkt_ipv6_fragment_hdr, PKT_IPV6_FRAGMENT_HDR_LEN,
 	                   &retval, NULL, NULL);
@@ -992,15 +1010,18 @@ static void test_ipv6_fragment_ext_drop(struct tun_decap_bpf *skel)
 		return;
 	}
 
+#ifdef ENABLE_STATS
 	__u64 frag_drops_after = read_stat(stats_fd, drop_fragmented);
 	if (frag_drops_after <= frag_drops_before) {
 		TEST_FAIL(name, "drop_fragmented counter not incremented");
 		return;
 	}
+#endif
 
 	TEST_PASS(name);
 }
 
+#ifdef ENABLE_STATS
 /*
  * Test: Statistics are correctly updated
  */
@@ -1050,6 +1071,7 @@ static void test_statistics(struct tun_decap_bpf *skel)
 
 	TEST_PASS(name);
 }
+#endif /* ENABLE_STATS */
 
 /*
  * Print test summary
@@ -1118,7 +1140,9 @@ int main(int argc, char **argv)
 
 	/* Initialize: clear whitelist and reset stats */
 	whitelist_clear(bpf_map__fd(skel->maps.tun_decap_whitelist));
+#ifdef ENABLE_STATS
 	reset_stats(bpf_map__fd(skel->maps.tun_decap_stats));
+#endif
 
 	/* Initialize config map - enable all tunnel processing */
 	{
@@ -1170,8 +1194,10 @@ int main(int argc, char **argv)
 	test_ipv6_passthrough(skel);
 	test_gre_truncated(skel);
 
+#ifdef ENABLE_STATS
 	/* Statistics verification */
 	test_statistics(skel);
+#endif
 
 	/* Cleanup */
 	tun_decap_bpf__destroy(skel);

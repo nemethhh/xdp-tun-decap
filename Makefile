@@ -39,9 +39,9 @@ else
     XDP_INCLUDES :=
 endif
 
-# Statistics support (default: enabled)
-# Use STATS=0 to compile without statistics for maximum performance
-STATS ?= 1
+# Statistics support (default: disabled for maximum performance)
+# Use STATS=1 to compile with statistics
+STATS ?= 0
 ifeq ($(STATS),1)
     STATS_DEFINES := -DENABLE_STATS
 else
@@ -308,7 +308,7 @@ help:
 	@echo "  help              - Show this help"
 	@echo ""
 	@echo "Build Options:"
-	@echo "  STATS=0           - Compile without statistics (max performance)"
+	@echo "  STATS=1           - Compile with statistics support"
 	@echo ""
 	@echo "Requirements:"
 	@echo "  - Linux kernel 5.17+ with CONFIG_DEBUG_INFO_BTF=y"

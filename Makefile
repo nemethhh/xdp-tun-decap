@@ -19,6 +19,7 @@ VMLINUX_H := $(BPF_DIR)/vmlinux.h
 BPF_OBJ := $(BUILD_DIR)/tun_decap.bpf.o
 BPF_SKEL := $(BUILD_DIR)/tun_decap.skel.h
 TEST_BIN := $(BUILD_DIR)/test_decap
+BENCH_BIN := $(BUILD_DIR)/bench_decap
 
 # Helper test binaries (run in userspace, no root required)
 TEST_PARSING_BIN := $(BUILD_DIR)/test_parsing_helpers
@@ -117,6 +118,15 @@ test-build: $(TEST_BIN)
 
 $(TEST_BIN): $(TEST_DIR)/test_decap.c $(TEST_DIR)/test_packets.h $(BPF_SKEL) | $(BUILD_DIR)
 	@echo "Building test binary..."
+	$(CC) $(USER_CFLAGS) $< -o $@ $(USER_LDFLAGS)
+	@echo "Generated $@"
+
+# Build benchmark binary
+.PHONY: bench-build
+bench-build: $(BENCH_BIN)
+
+$(BENCH_BIN): $(TEST_DIR)/bench_decap.c $(TEST_DIR)/test_packets.h $(BPF_SKEL) | $(BUILD_DIR)
+	@echo "Building benchmark binary..."
 	$(CC) $(USER_CFLAGS) $< -o $@ $(USER_LDFLAGS)
 	@echo "Generated $@"
 
@@ -274,6 +284,56 @@ lint-fix: $(VMLINUX_H)
 check: format-check lint
 	@echo "All checks passed"
 
+# ===== Benchmarking Targets =====
+
+# Run benchmarks with hardware counters (requires root)
+.PHONY: bench
+bench: $(BENCH_BIN)
+	@if [ $$(id -u) -ne 0 ]; then \
+		echo "Benchmarks require root privileges. Running with sudo..."; \
+		sudo $(BENCH_BIN); \
+	else \
+		$(BENCH_BIN); \
+	fi
+
+# Run benchmarks wrapped in perf stat for aggregate hardware counter view
+.PHONY: bench-perf
+bench-perf: $(BENCH_BIN)
+	@echo "Running benchmarks with perf stat overlay..."
+	@if [ $$(id -u) -ne 0 ]; then \
+		sudo perf stat -d $(BENCH_BIN); \
+	else \
+		perf stat -d $(BENCH_BIN); \
+	fi
+
+# ===== Profiling Targets =====
+
+# Full profiling: Docker containers, traffic, perf record, flame chart
+.PHONY: profile
+profile: all
+	@sudo scripts/profile.sh
+
+# Quick profiling: assumes Docker containers are already running
+.PHONY: profile-quick
+profile-quick: all
+	@sudo scripts/profile.sh --quick
+
+# ===== Static Analysis =====
+
+# Show per-function BPF instruction counts and program size
+.PHONY: analyze
+analyze: $(BPF_OBJ)
+	@echo "=== BPF Instruction Analysis (stats=$(STATS)) ==="
+	@echo ""
+	@echo "Block breakdown:"
+	@llvm-objdump -d $< | awk '/^[0-9a-f]+ <.*>:/{name=$$2; count=0; next} /^[[:space:]]+[0-9a-f]+:/{count++; total++} /^$$/{if(name) printf "  %-40s %d instructions\n", name, count; name=""}  END{if(name) printf "  %-40s %d instructions\n", name, count; printf "\n  %-40s %d instructions\n", "TOTAL (xdp section)", total}'
+	@echo ""
+	@echo "Section sizes:"
+	@llvm-objdump -h $< | awk '/xdp|\.text|\.maps/{printf "  %-20s %s bytes\n", $$2, $$3}'
+	@echo ""
+	@echo "Note: All helpers are __always_inline, so blocks are compiler-generated"
+	@echo "      labels within the single xdp_tun_decap function."
+
 # Help
 .PHONY: help
 help:
@@ -285,6 +345,7 @@ help:
 	@echo "  bpf               - Compile BPF program"
 	@echo "  skel              - Generate BPF skeleton header"
 	@echo "  test-build        - Build BPF test binary"
+	@echo "  bench-build       - Build benchmark binary"
 	@echo "  test-helpers-build- Build helper test binaries (no BPF)"
 	@echo ""
 	@echo "Test Targets:"
@@ -293,6 +354,13 @@ help:
 	@echo "  test              - Run all unit tests (helpers + BPF)"
 	@echo "  integration-test  - Run Docker-based integration tests"
 	@echo "  test-all          - Run all tests (unit + integration)"
+	@echo ""
+	@echo "Benchmark & Profiling:"
+	@echo "  bench             - Run per-packet benchmarks with hw counters (sudo)"
+	@echo "  bench-perf        - Run benchmarks wrapped in perf stat (sudo)"
+	@echo "  profile           - Full profiling: Docker + perf + flame chart (sudo)"
+	@echo "  profile-quick     - Profile with containers already running (sudo)"
+	@echo "  analyze           - Static BPF instruction count analysis"
 	@echo ""
 	@echo "Development Targets:"
 	@echo "  verify            - Verify BPF program loads successfully"
@@ -314,3 +382,4 @@ help:
 	@echo "  - Linux kernel 5.17+ with CONFIG_DEBUG_INFO_BTF=y"
 	@echo "  - clang, llvm, bpftool, libbpf-dev"
 	@echo "  - clang-format, clang-tidy (for linting and formatting)"
+	@echo "  - perf (for bench-perf, profile targets)"

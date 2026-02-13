@@ -34,6 +34,9 @@ make skel
 # Build test binary
 make test-build
 
+# Build benchmark binary
+make bench-build
+
 # Run tests (requires root)
 make test
 
@@ -74,6 +77,50 @@ docker compose down -v
 ```
 
 Integration tests use Docker containers with tcpdump-based verification. Tests verify decapsulation by searching for unique payload markers in packet captures.
+
+### Benchmarks
+```bash
+# Run per-packet benchmarks with hardware counters (requires root)
+sudo make bench
+
+# With custom iteration count
+sudo build/bench_decap --repeat 1000000 --warmup 1000
+
+# Skip hardware counters (for VMs without PMU access)
+sudo build/bench_decap --no-hwcounters
+
+# Benchmarks wrapped in perf stat for aggregate hardware counter view
+sudo make bench-perf
+
+# Static BPF instruction count analysis (no root required)
+make analyze
+
+# Compare stats-enabled vs disabled instruction counts
+make analyze STATS=0
+make analyze STATS=1
+```
+
+The benchmark binary (`src/test/bench_decap.c`) uses `BPF_PROG_TEST_RUN` with `repeat=N` for kernel-measured per-packet latency, and `perf_event_open()` for hardware PMU counters (instructions, cycles, IPC, L1 cache misses). It covers 18 packet types across all code paths (decap, drop, passthrough).
+
+### Profiling
+```bash
+# Full profiling: starts Docker, generates traffic, produces flame chart
+sudo make profile
+
+# Quick mode (containers already running)
+sudo make profile-quick
+
+# Custom traffic volume and sampling frequency
+sudo scripts/profile.sh --count 5000 --freq 19999
+```
+
+Profiling outputs to `build/profile/`:
+- `flamegraph.svg` - interactive flame chart (open in browser)
+- `bpf-stats.txt` - BPF program runtime statistics (`run_time_ns`, `run_cnt`)
+- `bpftool-profile.txt` - per-program hardware counter stats
+- `perf.data` - raw perf data for further analysis
+
+Requires: `perf`, `bpftool`, `docker`, and FlameGraph tools in `tools/flamegraph/`.
 
 ## Architecture
 
@@ -171,6 +218,39 @@ Three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`):
 - `struct whitelist_value`, `struct ipv6_addr` - map key/value types
 - `struct tun_decap_config` - runtime configuration
 - Protocol numbers and constants
+
+### Benchmark & Profiling Infrastructure
+
+**Benchmark Binary** (`src/test/bench_decap.c`):
+- Table-driven: 18 `bench_entry` structs covering all packet types and code paths
+- Hardware counters via `perf_event_open()` syscall (cycles, instructions, cache misses)
+- Kernel-measured latency via `bpf_test_run_opts.duration` (average ns/run)
+- Code path classification (`enum bench_path`) auto-computes map lookup and helper call counts
+- CPU pinning (`sched_setaffinity`) for stable measurements
+- CLI: `--repeat N`, `--warmup N`, `--no-hwcounters`
+
+**Code Path Operation Counts** (with ENABLE_STATS):
+
+| Path | Config | Stats | Whitelist | adjust_head | Map lookups | Helpers |
+|------|:------:|:-----:|:---------:|:-----------:|:-----------:|:-------:|
+| Decap (whitelisted) | 1 | 1 | 1 | 1 | 3 | 4 |
+| Drop (not whitelisted) | 1 | 1 | 1 | 0 | 3 | 3 |
+| Drop (fragmented) | 1 | 1 | 0 | 0 | 2 | 2 |
+| Drop (malformed) | 1 | 1 | 1 | 0 | 3 | 3 |
+| Passthrough | 1 | 1 | 0 | 0 | 2 | 2 |
+
+Without ENABLE_STATS: subtract 1 from map lookups and helpers (no stats lookup).
+
+**Profiling Script** (`scripts/profile.sh`):
+- Orchestrates perf record during Docker integration test traffic
+- Enables `kernel.bpf_stats_enabled` and `net.core.bpf_jit_kallsyms` for BPF visibility
+- Generates flame charts via vendored FlameGraph tools (`tools/flamegraph/`)
+- Outputs to `build/profile/`
+
+**Static Analysis** (`make analyze`):
+- Dumps per-block BPF instruction counts from compiled object via `llvm-objdump`
+- Shows total instruction count and section sizes
+- All helpers are `__always_inline`, so output shows compiler-generated blocks within the single `xdp_tun_decap` function
 
 ## BPF Verifier Constraints
 
@@ -327,6 +407,10 @@ sudo rm -f /sys/fs/bpf/tun_decap_*
    - Use `if (stats) stats->field++` pattern for counter updates
 5. Add case to switch statement in `xdp_tun_decap()`
 6. Add test cases to `src/test/test_decap.c` and integration tests
+7. Add benchmark entry to `bench_entries[]` in `src/test/bench_decap.c`
+   - Define test packet (or add to `test_packets.h` if shared with tests)
+   - Set appropriate `enum bench_path` for operation count classification
+   - Add whitelist setup if needed (whitelisted IPs are configured in `main()`)
 
 ### Modifying Packet Processing
 - Always check bounds before dereferencing: `if ((void *)(ptr + 1) > data_end)`
@@ -352,7 +436,7 @@ sudo bpftool prog tracelog
 ## Dependencies
 
 Build requirements:
-- clang/LLVM (BPF backend)
+- clang/LLVM (BPF backend, also provides `llvm-objdump` for `make analyze`)
 - bpftool (skeleton generation, map management)
 - libbpf-dev (BPF library)
 - libxdp-dev (multi-program support, optional but recommended)
@@ -360,3 +444,8 @@ Build requirements:
 Runtime requirements:
 - Linux kernel 5.17+ with `CONFIG_DEBUG_INFO_BTF=y`
 - XDP-capable network interface (or use SKB mode)
+
+Benchmark/profiling requirements:
+- perf (for `make bench-perf` and `make profile`)
+- Docker (for `make profile` integration test profiling)
+- Perl (for FlameGraph scripts in `tools/flamegraph/`)

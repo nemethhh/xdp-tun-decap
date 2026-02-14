@@ -37,9 +37,12 @@ BPF_EXIST = 2
 MAP_PIN_PATH_WHITELIST = "/sys/fs/bpf/tun_decap_whitelist"
 MAP_PIN_PATH_WHITELIST_V6 = "/sys/fs/bpf/tun_decap_whitelist_v6"
 MAP_PIN_PATH_STATS = "/sys/fs/bpf/tun_decap_stats"
-MAP_PIN_PATH_CONFIG = "/sys/fs/bpf/tun_decap_config"
+# NOTE: Config is now a BPF global variable (not a map).
+# Use bpftool to modify: find .bss map ID via `bpftool prog show`,
+# then `bpftool map update id <ID> ...`
 
-# Statistics indices from tun_decap.h
+# Statistics field names from tun_decap.h (struct tun_decap_stats)
+# These match the order of fields in the struct
 STAT_NAMES = [
     "rx_total",
     "rx_gre",
@@ -48,10 +51,12 @@ STAT_NAMES = [
     "rx_ipv6_outer",
     "rx_gre_ipv6_inner",
     "rx_ipip_ipv6_inner",
+    "rx_ipv6_in_ipv6",
     "decap_success",
     "decap_failed",
     "drop_not_whitelisted",
     "drop_malformed",
+    "drop_fragmented",
     "pass_non_tunnel",
 ]
 
@@ -110,7 +115,9 @@ class BPFMapManager:
         """Lookup element in BPF map."""
         key_buf = ctypes.create_string_buffer(key_bytes)
         # For per-CPU maps, allocate enough space for all CPUs
-        value_buf = ctypes.create_string_buffer(8 * self.num_cpus)
+        # Stats struct: 14 fields x 8 bytes x num_cpus = 112 x num_cpus
+        # Use generous buffer size to handle any map value
+        value_buf = ctypes.create_string_buffer(256 * self.num_cpus)
 
         attr = BpfAttrMapOp()
         attr.map_fd = map_fd
@@ -258,81 +265,41 @@ class XDPTunDecapManager:
             print(f"✗ {ip_address} is NOT whitelisted")
             return False
 
-    # Configuration operations
-    def config_set(
-        self, disabled=None, disable_gre=None, disable_ipip=None, disable_stats=None
-    ):
-        """Update runtime configuration."""
-        # Read current config
-        map_fd = self._open_map(MAP_PIN_PATH_CONFIG)
-        key = struct.pack("I", 0)
-
-        current = self.bpf.map_lookup_elem(map_fd, key)
-        if current:
-            (
-                current_disabled,
-                current_gre,
-                current_ipip,
-                current_stats,
-            ) = struct.unpack("BBBB", current[:4])
-        else:
-            current_disabled = current_gre = current_ipip = current_stats = 0
-
-        # Update values
-        new_disabled = disabled if disabled is not None else current_disabled
-        new_gre = disable_gre if disable_gre is not None else current_gre
-        new_ipip = disable_ipip if disable_ipip is not None else current_ipip
-        new_stats = disable_stats if disable_stats is not None else current_stats
-
-        value = struct.pack("BBBB", new_disabled, new_gre, new_ipip, new_stats)
-        self.bpf.map_update_elem(map_fd, key, value, BPF_ANY)
-        os.close(map_fd)
-
-        print("✓ Configuration updated:")
-        print(f"  All processing:  {'DISABLED' if new_disabled else 'enabled'}")
-        print(f"  GRE processing:  {'DISABLED' if new_gre else 'enabled'}")
-        print(f"  IPIP processing: {'DISABLED' if new_ipip else 'enabled'}")
-        print(f"  Statistics:      {'DISABLED' if new_stats else 'enabled'}")
-
-    def config_show(self):
-        """Show current configuration."""
-        map_fd = self._open_map(MAP_PIN_PATH_CONFIG)
-        key = struct.pack("I", 0)
-
-        result = self.bpf.map_lookup_elem(map_fd, key)
-        os.close(map_fd)
-
-        if result:
-            disabled, disable_gre, disable_ipip, disable_stats = struct.unpack(
-                "BBBB", result[:4]
-            )
-        else:
-            disabled = disable_gre = disable_ipip = disable_stats = 0
-
-        print("Current configuration:")
-        print(f"  All processing:  {'DISABLED' if disabled else 'enabled'}")
-        print(f"  GRE processing:  {'DISABLED' if disable_gre else 'enabled'}")
-        print(f"  IPIP processing: {'DISABLED' if disable_ipip else 'enabled'}")
-        print(f"  Statistics:      {'DISABLED' if disable_stats else 'enabled'}")
-
     # Statistics operations
     def stats_show(self):
-        """Show current statistics."""
+        """Show current statistics.
+
+        The stats map contains a single entry (key=0) with a struct
+        containing all 14 counters. For per-CPU maps, the value is
+        an array of structs (one per CPU).
+        """
         map_fd = self._open_map(MAP_PIN_PATH_STATS)
+
+        # Read the single struct at key=0
+        key = struct.pack("I", 0)
+        result = self.bpf.map_lookup_elem(map_fd, key)
+
+        if not result:
+            print("Error: Could not read statistics")
+            os.close(map_fd)
+            return
+
+        # Parse per-CPU structs: each CPU has 14 uint64 fields
+        num_fields = len(STAT_NAMES)
+        values_per_cpu = struct.unpack(f"{self.bpf.num_cpus * num_fields}Q", result)
 
         print("Statistics (aggregated across all CPUs):")
         print("-" * 50)
-        for idx, name in enumerate(STAT_NAMES):
-            key = struct.pack("I", idx)
-            result = self.bpf.map_lookup_elem(map_fd, key)
 
-            if result:
-                # Sum per-CPU values
-                values = struct.unpack(f"{self.bpf.num_cpus}Q", result)
-                total = sum(values)
-                print(f"  {name:25s}: {total:>15,}")
-            else:
-                print(f"  {name:25s}: {0:>15}")
+        # Aggregate each field across all CPUs
+        for field_idx, name in enumerate(STAT_NAMES):
+            total = 0
+            for cpu in range(self.bpf.num_cpus):
+                # Extract the field value for this CPU
+                offset = cpu * num_fields + field_idx
+                total += values_per_cpu[offset]
+
+            print(f"  {name:25s}: {total:>15,}")
 
         os.close(map_fd)
 
@@ -353,15 +320,6 @@ Examples:
   %(prog)s whitelist-add 2001:db8::1
   %(prog)s whitelist-remove 2001:db8::1
   %(prog)s whitelist-check 2001:db8::1
-
-  # Configuration
-  %(prog)s config-show
-  %(prog)s config-disable-all
-  %(prog)s config-enable-all
-  %(prog)s config-disable-gre
-  %(prog)s config-enable-gre
-  %(prog)s config-disable-stats
-  %(prog)s config-enable-stats
 
   # Statistics
   %(prog)s stats
@@ -385,17 +343,6 @@ Examples:
         "whitelist-check", help="Check if IP is whitelisted"
     )
     check_parser.add_argument("ip", help="IPv4 or IPv6 address")
-
-    # Config commands
-    subparsers.add_parser("config-show", help="Show current configuration")
-    subparsers.add_parser("config-disable-all", help="Disable all processing")
-    subparsers.add_parser("config-enable-all", help="Enable all processing")
-    subparsers.add_parser("config-disable-gre", help="Disable GRE processing")
-    subparsers.add_parser("config-enable-gre", help="Enable GRE processing")
-    subparsers.add_parser("config-disable-ipip", help="Disable IPIP processing")
-    subparsers.add_parser("config-enable-ipip", help="Enable IPIP processing")
-    subparsers.add_parser("config-disable-stats", help="Disable statistics collection")
-    subparsers.add_parser("config-enable-stats", help="Enable statistics collection")
 
     # Stats commands
     subparsers.add_parser("stats", help="Show statistics")
@@ -435,34 +382,6 @@ Examples:
                 manager.whitelist_check_ipv4(str(ip))
             else:
                 manager.whitelist_check_ipv6(str(ip))
-
-        # Config operations
-        elif args.command == "config-show":
-            manager.config_show()
-
-        elif args.command == "config-disable-all":
-            manager.config_set(disabled=1)
-
-        elif args.command == "config-enable-all":
-            manager.config_set(disabled=0)
-
-        elif args.command == "config-disable-gre":
-            manager.config_set(disable_gre=1)
-
-        elif args.command == "config-enable-gre":
-            manager.config_set(disable_gre=0)
-
-        elif args.command == "config-disable-ipip":
-            manager.config_set(disable_ipip=1)
-
-        elif args.command == "config-enable-ipip":
-            manager.config_set(disable_ipip=0)
-
-        elif args.command == "config-disable-stats":
-            manager.config_set(disable_stats=1)
-
-        elif args.command == "config-enable-stats":
-            manager.config_set(disable_stats=0)
 
         # Stats operations
         elif args.command == "stats":

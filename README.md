@@ -7,9 +7,9 @@ High-performance XDP program for decapsulating GRE and IPIP tunnel traffic with 
 - **GRE decapsulation** (protocol 47) - RFC 2784/2890 compliant
 - **IPIP decapsulation** (protocol 4) - RFC 2003 compliant
 - **libxdp multi-program support** - Works alongside other XDP programs
-- **Per-CPU whitelist** - Lock-free O(1) lookups
+- **Fast whitelist lookups** - O(1) hash map lookups with RCU protection
 - **CO-RE support** - Compile Once, Run Everywhere portability
-- **Comprehensive statistics** - Per-CPU counters for monitoring (configurable at runtime)
+- **Comprehensive statistics** - 14 per-CPU counters for monitoring (compile-time configurable)
 
 ## Requirements
 
@@ -81,18 +81,27 @@ sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist
 ### Viewing statistics
 
 ```bash
-# Dump all statistics
+# Dump all statistics (single struct with 14 counters per CPU)
 sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_stats
 
-# Statistics indices:
-# 0 - RX total
-# 1 - RX GRE
-# 2 - RX IPIP
-# 3 - Decap success
-# 4 - Decap failed
-# 5 - Drop (not whitelisted)
-# 6 - Drop (malformed)
-# 7 - Pass (non-tunnel)
+# Or use the Python manager tool for formatted output:
+sudo python3 map_manager/xdp_tun_decap_manager.py stats
+
+# Statistics fields (struct tun_decap_stats):
+#  0 - rx_total               (Total packets received)
+#  1 - rx_gre                 (GRE tunnel packets)
+#  2 - rx_ipip                (IPIP tunnel packets)
+#  3 - rx_ipv6_in_ipv4        (IPv6-in-IPv4 tunnel packets)
+#  4 - rx_ipv6_outer          (Packets with IPv6 outer header)
+#  5 - rx_gre_ipv6_inner      (GRE with IPv6 inner)
+#  6 - rx_ipip_ipv6_inner     (IPIP with IPv6 inner)
+#  7 - rx_ipv6_in_ipv6        (IPv6-in-IPv6 tunnel packets)
+#  8 - decap_success          (Successfully decapsulated)
+#  9 - decap_failed           (Decapsulation failures)
+# 10 - drop_not_whitelisted   (Dropped: not whitelisted)
+# 11 - drop_malformed         (Dropped: malformed packet)
+# 12 - drop_fragmented        (Dropped: fragmented outer)
+# 13 - pass_non_tunnel        (Non-tunnel traffic passed)
 ```
 
 ### Unloading
@@ -154,9 +163,11 @@ Incoming Packet
 
 | Map | Type | Purpose |
 |-----|------|---------|
-| `tun_decap_whitelist` | PERCPU_HASH | Source IP whitelist |
-| `tun_decap_stats` | PERCPU_ARRAY | Per-CPU statistics |
-| `tun_decap_config` | ARRAY | Runtime configuration |
+| `tun_decap_whitelist` | HASH | IPv4 source whitelist (RCU-protected) |
+| `tun_decap_whitelist_v6` | HASH | IPv6 source whitelist (RCU-protected) |
+| `tun_decap_stats` | PERCPU_ARRAY | Per-CPU statistics (single struct with 14 counters) |
+
+**Note:** Runtime configuration is stored as a BPF global variable (`cfg_global`), accessible via the program's `.bss` map.
 
 ## libxdp Multi-Program Support
 
@@ -284,14 +295,11 @@ cd map_manager
 sudo python3 xdp_tun_decap_manager.py whitelist-add 10.200.0.20
 sudo python3 xdp_tun_decap_manager.py whitelist-add 2001:db8::1
 
-# Runtime configuration
-sudo python3 xdp_tun_decap_manager.py config-disable-gre
-sudo python3 xdp_tun_decap_manager.py config-disable-stats  # Disable statistics for performance
-sudo python3 xdp_tun_decap_manager.py config-show
-
-# View statistics
+# View statistics (aggregated across all CPUs)
 sudo python3 xdp_tun_decap_manager.py stats
 ```
+
+**Note:** Runtime configuration is now a BPF global variable. To modify config, use `bpftool` to update the program's `.bss` map (see [map_manager/README.md](map_manager/README.md) for details).
 
 See [map_manager/README.md](map_manager/README.md) for complete documentation.
 

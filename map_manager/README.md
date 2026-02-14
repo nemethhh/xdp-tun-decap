@@ -6,8 +6,7 @@ Python tool to manage BPF maps for the xdp-tun-decap program.
 
 - **IPv4 Whitelist**: Add/remove/check IPv4 addresses
 - **IPv6 Whitelist**: Add/remove/check IPv6 addresses
-- **Configuration**: Enable/disable processing at runtime
-- **Statistics**: View aggregated packet statistics
+- **Statistics**: View aggregated packet statistics (all 14 counters)
 
 ## Installation
 
@@ -59,80 +58,44 @@ sudo python3 xdp_tun_decap_manager.py whitelist-check 2001:db8::1
 
 ### Runtime Configuration
 
+**Note:** Runtime configuration is now stored as a BPF global variable (`cfg_global`) for optimal performance. It must be updated via the program's `.bss` map using `bpftool`:
+
 **Show current configuration:**
 ```bash
-sudo python3 xdp_tun_decap_manager.py config-show
-# Current configuration:
-#   All processing:  enabled
-#   GRE processing:  enabled
-#   IPIP processing: enabled
-#   Statistics:      enabled
+# Find the XDP program
+sudo bpftool prog show | grep tun_decap
+
+# Show the .bss map (contains cfg_global)
+sudo bpftool map dump name tun_decap_b.bss
 ```
 
-**Disable all processing:**
+**Update configuration:**
 ```bash
-sudo python3 xdp_tun_decap_manager.py config-disable-all
-# ✓ Configuration updated:
-#   All processing:  DISABLED
-#   GRE processing:  enabled
-#   IPIP processing: enabled
-#   Statistics:      enabled
+# Find the .bss map ID
+PROG_ID=$(sudo bpftool prog show | grep tun_decap | awk '{print $1}' | sed 's/://')
+BSS_MAP_ID=$(sudo bpftool prog show id $PROG_ID | grep 'map_ids' | grep -oP '\d+' | head -n 1)
+
+# Disable all processing (set disabled=1, others=0)
+sudo bpftool map update id $BSS_MAP_ID key hex 00 00 00 00 value hex 01 00 00 00
+
+# Enable all processing (set all to 0)
+sudo bpftool map update id $BSS_MAP_ID key hex 00 00 00 00 value hex 00 00 00 00
+
+# Disable only GRE (disabled=0, disable_gre=1, disable_ipip=0, disable_stats=0)
+sudo bpftool map update id $BSS_MAP_ID key hex 00 00 00 00 value hex 00 01 00 00
+
+# Disable only IPIP
+sudo bpftool map update id $BSS_MAP_ID key hex 00 00 00 00 value hex 00 00 01 00
+
+# Disable statistics collection
+sudo bpftool map update id $BSS_MAP_ID key hex 00 00 00 00 value hex 00 00 00 01
 ```
 
-**Enable all processing:**
-```bash
-sudo python3 xdp_tun_decap_manager.py config-enable-all
-# ✓ Configuration updated:
-#   All processing:  enabled
-#   GRE processing:  enabled
-#   IPIP processing: enabled
-#   Statistics:      enabled
-```
-
-**Disable only GRE:**
-```bash
-sudo python3 xdp_tun_decap_manager.py config-disable-gre
-# ✓ Configuration updated:
-#   All processing:  enabled
-#   GRE processing:  DISABLED
-#   IPIP processing: enabled
-#   Statistics:      enabled
-```
-
-**Enable GRE:**
-```bash
-sudo python3 xdp_tun_decap_manager.py config-enable-gre
-```
-
-**Disable only IPIP:**
-```bash
-sudo python3 xdp_tun_decap_manager.py config-disable-ipip
-```
-
-**Enable IPIP:**
-```bash
-sudo python3 xdp_tun_decap_manager.py config-enable-ipip
-```
-
-**Disable statistics collection:**
-```bash
-sudo python3 xdp_tun_decap_manager.py config-disable-stats
-# ✓ Configuration updated:
-#   All processing:  enabled
-#   GRE processing:  enabled
-#   IPIP processing: enabled
-#   Statistics:      DISABLED
-```
-
-**Enable statistics collection:**
-```bash
-sudo python3 xdp_tun_decap_manager.py config-enable-stats
-# ✓ Configuration updated:
-#   All processing:  enabled
-#   GRE processing:  enabled
-#   IPIP processing: enabled
-#   Statistics:      enabled
-```
+**Configuration struct format:**
+- Byte 0: `disabled` (0=enabled, 1=disabled all processing)
+- Byte 1: `disable_gre` (0=enabled, 1=disabled GRE only)
+- Byte 2: `disable_ipip` (0=enabled, 1=disabled IPIP only)
+- Byte 3: `disable_stats` (0=enabled, 1=disabled statistics)
 
 ### Statistics
 
@@ -148,17 +111,16 @@ sudo python3 xdp_tun_decap_manager.py stats
 #   rx_ipv6_outer            :          10,000
 #   rx_gre_ipv6_inner        :           2,000
 #   rx_ipip_ipv6_inner       :           1,000
+#   rx_ipv6_in_ipv6          :           1,500
 #   decap_success            :          70,000
 #   decap_failed             :              10
 #   drop_not_whitelisted     :           3,446
 #   drop_malformed           :               0
+#   drop_fragmented          :              50
 #   pass_non_tunnel          :          50,000
 ```
 
-**Note**: Statistics collection is enabled by default. You can disable it to reduce overhead in high-throughput environments where monitoring is handled externally:
-```bash
-sudo python3 xdp_tun_decap_manager.py config-disable-stats
-```
+**Note**: Statistics collection is compile-time configurable (enabled by default in release builds). To disable at runtime, update the `cfg_global.disable_stats` field via the `.bss` map (see Configuration section above).
 
 ## Command Reference
 
@@ -168,20 +130,11 @@ whitelist-add IP          Add IP to whitelist
 whitelist-remove IP       Remove IP from whitelist
 whitelist-check IP        Check if IP is whitelisted
 
-# Configuration operations
-config-show               Show current configuration
-config-disable-all        Disable all processing
-config-enable-all         Enable all processing
-config-disable-gre        Disable GRE processing only
-config-enable-gre         Enable GRE processing
-config-disable-ipip       Disable IPIP processing only
-config-enable-ipip        Enable IPIP processing
-config-disable-stats      Disable statistics collection
-config-enable-stats       Enable statistics collection
-
 # Statistics
-stats                     Show aggregated statistics
+stats                     Show aggregated statistics (all 14 counters)
 ```
+
+**Configuration operations** are now done via `bpftool` (see Configuration section above).
 
 ## Examples
 
@@ -203,12 +156,17 @@ done
 
 ```bash
 # Disable all processing for maintenance
-sudo python3 xdp_tun_decap_manager.py config-disable-all
+# First, find the .bss map ID
+PROG_ID=$(sudo bpftool prog show | grep tun_decap | awk '{print $1}' | sed 's/://')
+BSS_MAP_ID=$(sudo bpftool prog show id $PROG_ID | grep 'map_ids' | grep -oP '\d+' | head -n 1)
+
+# Disable all processing
+sudo bpftool map update id $BSS_MAP_ID key hex 00 00 00 00 value hex 01 00 00 00
 
 # ... perform maintenance ...
 
 # Re-enable
-sudo python3 xdp_tun_decap_manager.py config-enable-all
+sudo bpftool map update id $BSS_MAP_ID key hex 00 00 00 00 value hex 00 00 00 00
 ```
 
 ### Debugging
@@ -220,8 +178,9 @@ sudo python3 xdp_tun_decap_manager.py stats
 # Check if source IP is whitelisted
 sudo python3 xdp_tun_decap_manager.py whitelist-check 10.200.0.20
 
-# Check configuration
-sudo python3 xdp_tun_decap_manager.py config-show
+# Check configuration (via .bss map)
+PROG_ID=$(sudo bpftool prog show | grep tun_decap | awk '{print $1}' | sed 's/://')
+sudo bpftool map dump name tun_decap_b.bss
 ```
 
 ## Architecture
@@ -239,8 +198,8 @@ sudo python3 xdp_tun_decap_manager.py config-show
 │                                  │
 │  - tun_decap_whitelist    (IPv4)│
 │  - tun_decap_whitelist_v6 (IPv6)│
-│  - tun_decap_config       (cfg) │
 │  - tun_decap_stats        (ro)  │
+│  - tun_decap_b.bss        (cfg) │
 └──────────────┬──────────────────┘
                │
                ▼ (kernel access)
@@ -255,24 +214,32 @@ sudo python3 xdp_tun_decap_manager.py config-show
 ### IPv4 Whitelist
 - **Key**: 4 bytes (IPv4 address, network byte order)
 - **Value**: 1 byte (allowed flag, 1 = whitelisted)
-- **Type**: Per-CPU hash map
+- **Type**: Hash map (RCU-protected, lock-free reads)
 
 ### IPv6 Whitelist
 - **Key**: 16 bytes (IPv6 address as 4x 32-bit words, network byte order)
 - **Value**: 1 byte (allowed flag, 1 = whitelisted)
-- **Type**: Per-CPU hash map
+- **Type**: Hash map (RCU-protected, lock-free reads)
 
-### Configuration
-- **Key**: 4 bytes (index 0)
-- **Value**: 4 bytes (disabled, disable_gre, disable_ipip, disable_stats)
-- **Type**: Array map
-- **Note**: 0 = enabled, 1 = disabled
+### Configuration (BPF Global Variable)
+- **Location**: Program's `.bss` map (named `tun_decap_b.bss` or similar)
+- **Structure**: `struct tun_decap_config` (4 bytes total)
+  - Byte 0: `disabled` (master disable switch)
+  - Byte 1: `disable_gre` (disable GRE only)
+  - Byte 2: `disable_ipip` (disable IPIP only)
+  - Byte 3: `disable_stats` (disable statistics collection)
+- **Note**: 0 = enabled, 1 = disabled (inverted logic for zero-init defaults)
+- **Access**: Via `bpftool map update/dump` on the `.bss` map
 
 ### Statistics
-- **Key**: 4 bytes (stat index 0-11)
-- **Value**: Per-CPU array of uint64
-- **Type**: Per-CPU array map
-- **Note**: Read-only from userspace
+- **Key**: 4 bytes (always 0 - single entry)
+- **Value**: Per-CPU struct with 14 uint64 fields (112 bytes per CPU)
+  - Fields: rx_total, rx_gre, rx_ipip, rx_ipv6_in_ipv4, rx_ipv6_outer,
+            rx_gre_ipv6_inner, rx_ipip_ipv6_inner, rx_ipv6_in_ipv6,
+            decap_success, decap_failed, drop_not_whitelisted,
+            drop_malformed, drop_fragmented, pass_non_tunnel
+- **Type**: Per-CPU array map (1 entry)
+- **Note**: Read-only from userspace, aggregated across CPUs by manager tool
 
 ## Troubleshooting
 
@@ -306,8 +273,8 @@ sudo python3 xdp_tun_decap_manager.py whitelist-add 2001:0db8:0000:0000:0000:000
 # For whitelist changes, use check command
 sudo python3 xdp_tun_decap_manager.py whitelist-check 10.200.0.20
 
-# For config changes, use show command
-sudo python3 xdp_tun_decap_manager.py config-show
+# For config changes, dump the .bss map
+sudo bpftool map dump name tun_decap_b.bss
 
 # For statistics, watch for changes
 watch -n 1 'sudo python3 xdp_tun_decap_manager.py stats'

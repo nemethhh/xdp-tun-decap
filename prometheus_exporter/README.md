@@ -9,7 +9,7 @@ A lightweight Python-based Prometheus exporter that reads statistics from the xd
 - **Automatic aggregation**: Sums per-CPU counters for accurate totals
 - **Standard Prometheus format**: Exposes metrics via HTTP endpoint
 - **Configurable binding**: Bind to specific IP address and port
-- **Comprehensive coverage**: All 12 statistics from xdp-tun-decap
+- **Comprehensive coverage**: All 14 statistics from xdp-tun-decap
 
 > **Note**: Statistics collection in the XDP program is enabled by default. It can be disabled via the config map for performance optimization (see map_manager documentation).
 
@@ -26,10 +26,12 @@ All metrics are prefixed with `xdp_tun_decap_`:
 | `xdp_tun_decap_rx_ipv6_outer` | Packets with IPv6 outer header |
 | `xdp_tun_decap_rx_gre_ipv6_inner` | GRE with IPv6 inner packet |
 | `xdp_tun_decap_rx_ipip_ipv6_inner` | IPIP with IPv6 inner packet |
+| `xdp_tun_decap_rx_ipv6_in_ipv6` | IPv6-in-IPv6 tunnel packets |
 | `xdp_tun_decap_decap_success` | Successfully decapsulated packets |
 | `xdp_tun_decap_decap_failed` | Decapsulation failures |
 | `xdp_tun_decap_drop_not_whitelisted` | Dropped (not whitelisted) |
 | `xdp_tun_decap_drop_malformed` | Dropped (malformed packet) |
+| `xdp_tun_decap_drop_fragmented` | Dropped (fragmented outer packet) |
 | `xdp_tun_decap_pass_non_tunnel` | Non-tunnel traffic passed |
 
 ## Installation
@@ -177,14 +179,11 @@ sudo python3 xdp_tun_decap_manager.py whitelist-add 10.200.0.20
 sudo python3 xdp_tun_decap_manager.py whitelist-add 2001:db8::1
 sudo python3 xdp_tun_decap_manager.py whitelist-check 10.200.0.20
 
-# Runtime configuration
-sudo python3 xdp_tun_decap_manager.py config-disable-gre
-sudo python3 xdp_tun_decap_manager.py config-show
+# View statistics
+sudo python3 xdp_tun_decap_manager.py stats
 
-# Statistics control
-sudo python3 xdp_tun_decap_manager.py config-disable-stats  # Disable for performance
-sudo python3 xdp_tun_decap_manager.py config-enable-stats   # Re-enable for monitoring
-sudo python3 xdp_tun_decap_manager.py stats                 # View current stats
+# Runtime configuration (via bpftool .bss map)
+# See map_manager documentation for config commands
 ```
 
 See [../map_manager/README.md](../map_manager/README.md) for complete documentation.
@@ -285,11 +284,11 @@ sum without (instance, job) (
 - Check: `sudo netstat -tlnp | grep 9100`
 
 ### No metrics updating
-- Check if statistics collection is enabled: `sudo python3 ../map_manager/xdp_tun_decap_manager.py config-show`
-- If statistics are disabled, enable them: `sudo python3 ../map_manager/xdp_tun_decap_manager.py config-enable-stats`
+- Check if statistics collection is enabled (compile-time, default ON)
 - Check XDP program receiving traffic: `sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_stats`
-- Verify interface has XDP program loaded
+- Verify interface has XDP program loaded: `sudo xdp-loader status`
 - Check exporter logs: `--verbose`
+- If stats disabled at runtime, enable via .bss map (see map_manager documentation)
 
 ### Cannot bind to address
 - Check if IP address exists on system: `ip addr show`

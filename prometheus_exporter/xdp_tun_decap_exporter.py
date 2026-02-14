@@ -30,7 +30,7 @@ BPF_OBJ_GET = 7
 # Map pin paths
 MAP_PIN_PATH_STATS = "/sys/fs/bpf/tun_decap_stats"
 
-# Statistics indices
+# Statistics field indices (struct tun_decap_stats field order)
 STAT_RX_TOTAL = 0
 STAT_RX_GRE = 1
 STAT_RX_IPIP = 2
@@ -38,12 +38,14 @@ STAT_RX_IPV6_IN_IPV4 = 3
 STAT_RX_IPV6_OUTER = 4
 STAT_RX_GRE_IPV6_INNER = 5
 STAT_RX_IPIP_IPV6_INNER = 6
-STAT_DECAP_SUCCESS = 7
-STAT_DECAP_FAILED = 8
-STAT_DROP_NOT_WHITELISTED = 9
-STAT_DROP_MALFORMED = 10
-STAT_PASS_NON_TUNNEL = 11
-STAT_MAX = 12
+STAT_RX_IPV6_IN_IPV6 = 7
+STAT_DECAP_SUCCESS = 8
+STAT_DECAP_FAILED = 9
+STAT_DROP_NOT_WHITELISTED = 10
+STAT_DROP_MALFORMED = 11
+STAT_DROP_FRAGMENTED = 12
+STAT_PASS_NON_TUNNEL = 13
+STAT_MAX = 14
 
 # Metric definitions
 METRIC_DEFINITIONS = [
@@ -71,6 +73,11 @@ METRIC_DEFINITIONS = [
         STAT_RX_IPIP_IPV6_INNER,
     ),
     (
+        "xdp_tun_decap_rx_ipv6_in_ipv6",
+        "IPv6-in-IPv6 tunnel packets received",
+        STAT_RX_IPV6_IN_IPV6,
+    ),
+    (
         "xdp_tun_decap_decap_success",
         "Packets successfully decapsulated",
         STAT_DECAP_SUCCESS,
@@ -82,6 +89,11 @@ METRIC_DEFINITIONS = [
         STAT_DROP_NOT_WHITELISTED,
     ),
     ("xdp_tun_decap_drop_malformed", "Dropped (malformed packet)", STAT_DROP_MALFORMED),
+    (
+        "xdp_tun_decap_drop_fragmented",
+        "Dropped (fragmented outer packet)",
+        STAT_DROP_FRAGMENTED,
+    ),
     (
         "xdp_tun_decap_pass_non_tunnel",
         "Non-tunnel traffic passed",
@@ -197,28 +209,45 @@ class XDPTunDecapExporter:
         except Exception as e:
             raise RuntimeError(f"Failed to open BPF map: {e}") from e
 
-    def read_percpu_stat(self, stat_idx):
-        """Read and aggregate per-CPU statistic.
+    def read_all_stats(self):
+        """Read and aggregate all per-CPU statistics.
 
-        For per-CPU arrays, the value is an array of uint64 (one per CPU).
-        We need to sum across all CPUs.
+        The stats map contains a single entry (key=0) with a struct
+        containing all 14 counters. For per-CPU maps, the value is
+        an array of structs (one per CPU). This method reads the
+        entire struct once and returns aggregated values.
+
+        Returns:
+            dict: Field index -> aggregated value across all CPUs
         """
         try:
-            # Value size = 8 bytes (uint64) * number of CPUs
-            value_size = 8 * self.num_cpus
-            values = self.bpf_reader.map_lookup_elem(self.map_fd, stat_idx, value_size)
+            # Stats struct: 14 fields x 8 bytes x num_cpus
+            value_size = STAT_MAX * 8 * self.num_cpus
+            values = self.bpf_reader.map_lookup_elem(self.map_fd, 0, value_size)
 
-            # Sum across all CPUs
-            total = sum(values)
-            return total
+            # Aggregate each field across all CPUs
+            aggregated = {}
+            for field_idx in range(STAT_MAX):
+                total = 0
+                for cpu in range(self.num_cpus):
+                    # Extract the field value for this CPU
+                    offset = cpu * STAT_MAX + field_idx
+                    total += values[offset]
+                aggregated[field_idx] = total
+
+            return aggregated
         except Exception as e:
-            self.logger.error("Error reading stat %d: %s", stat_idx, e)
-            return 0
+            self.logger.error("Error reading stats: %s", e)
+            return {i: 0 for i in range(STAT_MAX)}
 
     def update_metrics(self):
         """Update all Prometheus metrics with current BPF map values."""
+        # Read all stats at once (single map lookup)
+        stats = self.read_all_stats()
+
+        # Update each metric
         for name, _, stat_idx in METRIC_DEFINITIONS:
-            value = self.read_percpu_stat(stat_idx)
+            value = stats.get(stat_idx, 0)
             self.metrics[name].set(value)
             self.logger.debug("%s = %s", name, value)
 

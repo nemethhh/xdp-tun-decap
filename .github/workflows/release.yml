@@ -91,7 +91,7 @@ jobs:
             make vmlinux
           else
             echo "Creating placeholder vmlinux.h for CI build"
-            cat > src/bpf/vmlinux.h << 'EOF'
+            cat > src/bpf/vmlinux.h << 'VMLINUX_EOF'
           /* Minimal vmlinux.h for CI build */
           #ifndef __VMLINUX_H__
           #define __VMLINUX_H__
@@ -100,10 +100,10 @@ jobs:
           typedef unsigned int __u32;
           typedef unsigned long long __u64;
           #endif
-          EOF
+          VMLINUX_EOF
           fi
 
-      - name: Build release artifacts (default: WHITELIST=1)
+      - name: "Build release artifacts (default: WHITELIST=1)"
         run: |
           make all WHITELIST=1
           make test-build WHITELIST=1
@@ -114,7 +114,7 @@ jobs:
           make all WHITELIST=0
           echo "WHITELIST=0 build verified"
 
-      - name: Rebuild default for packaging (WHITELIST=1)
+      - name: "Rebuild default for packaging (WHITELIST=1)"
         run: |
           make clean
           make all WHITELIST=1

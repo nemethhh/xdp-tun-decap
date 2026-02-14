@@ -103,10 +103,22 @@ jobs:
           EOF
           fi
 
-      - name: Build release artifacts
+      - name: Build release artifacts (default: WHITELIST=1)
         run: |
-          make all
-          make test-build
+          make all WHITELIST=1
+          make test-build WHITELIST=1
+
+      - name: Verify WHITELIST=0 compiles
+        run: |
+          make clean
+          make all WHITELIST=0
+          echo "WHITELIST=0 build verified"
+
+      - name: Rebuild default for packaging (WHITELIST=1)
+        run: |
+          make clean
+          make all WHITELIST=1
+          make test-build WHITELIST=1
 
       - name: Create release package
         run: |

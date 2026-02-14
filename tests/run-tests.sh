@@ -26,6 +26,8 @@ cleanup() {
     echo ""
     echo "Cleaning up containers..."
     docker compose down -v 2>/dev/null || true
+    # Remove pinned BPF maps from host (shared bind mount)
+    rm -f /sys/fs/bpf/tun_decap_* 2>/dev/null || true
 }
 
 # Trap to ensure cleanup on exit
@@ -48,9 +50,10 @@ else
 fi
 echo ""
 
-# Clean up any existing containers first
+# Clean up any existing containers and stale pinned maps
 echo "Cleaning up any existing containers..."
 docker compose down -v 2>/dev/null || true
+rm -f /sys/fs/bpf/tun_decap_* 2>/dev/null || true
 
 # Start containers
 echo "Starting test containers..."

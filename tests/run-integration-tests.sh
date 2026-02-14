@@ -972,6 +972,11 @@ echo "XDP Program Statistics:"
 docker exec $XDP_TARGET bpftool map dump pinned /sys/fs/bpf/tun_decap_stats 2>&1 | head -20 || true
 echo ""
 
+# Cleanup: unload XDP program and remove pinned maps
+echo "Cleaning up XDP program and pinned maps..."
+docker exec $XDP_TARGET xdp-loader unload eth0 --all > /dev/null 2>&1 || true
+docker exec $XDP_TARGET rm -f /sys/fs/bpf/tun_decap_* > /dev/null 2>&1 || true
+
 if [ $TESTS_FAILED -eq 0 ]; then
     echo -e "${GREEN}All tests passed!${NC}"
     exit 0

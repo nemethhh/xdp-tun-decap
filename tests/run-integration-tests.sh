@@ -246,23 +246,34 @@ sleep 2
 # NOTE: Config map defaults to all zeros (processing enabled)
 # No initialization needed - the default state enables all processing
 
-# Add whitelisted IPv4 address to the whitelist map using bpftool
-# The whitelist map expects: key=IPv4 (4 bytes in network byte order), value=struct whitelist_value (1 byte)
-# Convert 10.200.0.20 to hex: 0a c8 00 14
-docker exec $XDP_TARGET bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist \
-    key hex 0a c8 00 14 \
-    value hex 01
+# Detect whether whitelist support is compiled in
+# When built with WHITELIST=0, whitelist maps won't exist
+WHITELIST_ENABLED=0
+if docker exec $XDP_TARGET bpftool map show pinned /sys/fs/bpf/tun_decap_whitelist > /dev/null 2>&1; then
+    WHITELIST_ENABLED=1
+fi
 
-echo "Whitelisted IPv4: $TUNNEL_SOURCE_IP (0a c8 00 14)"
+if [ "$WHITELIST_ENABLED" = "1" ]; then
+    # Add whitelisted IPv4 address to the whitelist map using bpftool
+    # The whitelist map expects: key=IPv4 (4 bytes in network byte order), value=struct whitelist_value (1 byte)
+    # Convert 10.200.0.20 to hex: 0a c8 00 14
+    docker exec $XDP_TARGET bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist \
+        key hex 0a c8 00 14 \
+        value hex 01
 
-# Add whitelisted IPv6 address to the IPv6 whitelist map
-# Convert fd00:db8:1::20 to hex (16 bytes in network byte order)
-# fd00:db8:1::20 = fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20
-docker exec $XDP_TARGET bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
-    key hex fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20 \
-    value hex 01
+    echo "Whitelisted IPv4: $TUNNEL_SOURCE_IP (0a c8 00 14)"
 
-echo "Whitelisted IPv6: $TUNNEL_SOURCE_IPV6 (fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20)"
+    # Add whitelisted IPv6 address to the IPv6 whitelist map
+    # Convert fd00:db8:1::20 to hex (16 bytes in network byte order)
+    # fd00:db8:1::20 = fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20
+    docker exec $XDP_TARGET bpftool map update pinned /sys/fs/bpf/tun_decap_whitelist_v6 \
+        key hex fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20 \
+        value hex 01
+
+    echo "Whitelisted IPv6: $TUNNEL_SOURCE_IPV6 (fd 00 0d b8 00 01 00 00 00 00 00 00 00 00 00 20)"
+else
+    echo "Whitelist maps not found - built with WHITELIST=0 (whitelist enforcement disabled)"
+fi
 
 sleep 1
 
@@ -273,11 +284,15 @@ if echo "$XDP_STATUS" | grep -q "xdp_tun_decap\|xdp\|ATTACHED"; then
     echo "  Program status:"
     echo "$XDP_STATUS" | head -10
 
-    # Verify whitelist maps
-    echo "  IPv4 Whitelist entries:"
-    docker exec $XDP_TARGET bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist 2>&1 | head -5 || true
-    echo "  IPv6 Whitelist entries:"
-    docker exec $XDP_TARGET bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist_v6 2>&1 | head -5 || true
+    # Verify whitelist maps (if compiled with whitelist support)
+    if [ "$WHITELIST_ENABLED" = "1" ]; then
+        echo "  IPv4 Whitelist entries:"
+        docker exec $XDP_TARGET bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist 2>&1 | head -5 || true
+        echo "  IPv6 Whitelist entries:"
+        docker exec $XDP_TARGET bpftool map dump pinned /sys/fs/bpf/tun_decap_whitelist_v6 2>&1 | head -5 || true
+    else
+        echo "  Whitelist: disabled (built with WHITELIST=0)"
+    fi
 elif docker exec $XDP_TARGET ip link show eth0 | grep -q "xdp"; then
     print_pass "XDP program attached successfully (fallback check)"
 else
@@ -510,26 +525,30 @@ fi
 
 print_section "Test 12: Non-Whitelisted Source (Should Drop)"
 run_test
-print_test "Sending tunnel packets from non-whitelisted source"
+if [ "$WHITELIST_ENABLED" = "1" ]; then
+    print_test "Sending tunnel packets from non-whitelisted source"
 
-start_capture ""
+    start_capture ""
 
-# Send GRE from untrusted source - should be dropped
-docker exec $UNTRUSTED_SOURCE python3 /usr/local/bin/generate-packets.py \
-    --type gre-ipv4 \
-    --src $UNTRUSTED_SOURCE_IP \
-    --dst $XDP_TARGET_IP \
-    --inner-src $INNER_CLIENT_IP \
-    --count 5
+    # Send GRE from untrusted source - should be dropped
+    docker exec $UNTRUSTED_SOURCE python3 /usr/local/bin/generate-packets.py \
+        --type gre-ipv4 \
+        --src $UNTRUSTED_SOURCE_IP \
+        --dst $XDP_TARGET_IP \
+        --inner-src $INNER_CLIENT_IP \
+        --count 5
 
-sleep 2
-stop_capture
+    sleep 2
+    stop_capture
 
-# Verify that the inner payload is NOT visible (packet was dropped, not decapsulated)
-if verify_not_decapsulated "TEST_GRE_IPV4_BASIC"; then
-    print_pass "Non-whitelisted tunnel traffic dropped successfully (payload not visible)"
+    # Verify that the inner payload is NOT visible (packet was dropped, not decapsulated)
+    if verify_not_decapsulated "TEST_GRE_IPV4_BASIC"; then
+        print_pass "Non-whitelisted tunnel traffic dropped successfully (payload not visible)"
+    else
+        print_fail "Non-whitelisted traffic was incorrectly decapsulated"
+    fi
 else
-    print_fail "Non-whitelisted traffic was incorrectly decapsulated"
+    print_pass "Skipped (whitelist disabled)"
 fi
 
 print_section "Test 13: Invalid GRE Version (Should Drop)"
@@ -609,41 +628,45 @@ fi
 
 print_section "Test 18: Multiple Whitelisted Sources"
 run_test
-print_test "Testing that both whitelisted and non-whitelisted sources behave correctly"
+if [ "$WHITELIST_ENABLED" = "1" ]; then
+    print_test "Testing that both whitelisted and non-whitelisted sources behave correctly"
 
-start_capture ""
+    start_capture ""
 
-# Test whitelisted source (should work)
-docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
-    --type gre-ipv4 \
-    --src $TUNNEL_SOURCE_IP \
-    --dst $XDP_TARGET_IP \
-    --inner-src $INNER_CLIENT_IP \
-    --count 3
+    # Test whitelisted source (should work)
+    docker exec $TUNNEL_SOURCE python3 /usr/local/bin/generate-packets.py \
+        --type gre-ipv4 \
+        --src $TUNNEL_SOURCE_IP \
+        --dst $XDP_TARGET_IP \
+        --inner-src $INNER_CLIENT_IP \
+        --count 3
 
-# Test non-whitelisted (should drop)
-docker exec $UNTRUSTED_SOURCE python3 /usr/local/bin/generate-packets.py \
-    --type gre-ipv4 \
-    --src $UNTRUSTED_SOURCE_IP \
-    --dst $XDP_TARGET_IP \
-    --inner-src $INNER_CLIENT_IP \
-    --count 3
+    # Test non-whitelisted (should drop)
+    docker exec $UNTRUSTED_SOURCE python3 /usr/local/bin/generate-packets.py \
+        --type gre-ipv4 \
+        --src $UNTRUSTED_SOURCE_IP \
+        --dst $XDP_TARGET_IP \
+        --inner-src $INNER_CLIENT_IP \
+        --count 3
 
-sleep 2
-stop_capture
+    sleep 2
+    stop_capture
 
-# Should see markers from whitelisted source only (exactly 3, not 6)
-MARKER_COUNT=$(docker exec $XDP_TARGET tcpdump -A -r $CAPTURE_FILE 2>/dev/null | grep -o "TEST_GRE_IPV4_BASIC" | wc -l || echo 0)
-if [ "$MARKER_COUNT" -eq 3 ]; then
-    print_pass "Whitelist enforcement working correctly (3 decapsulated, 3 dropped)"
-elif [ "$MARKER_COUNT" -ge 3 ] && [ "$MARKER_COUNT" -lt 6 ]; then
-    print_pass "Whitelist enforcement working correctly (~3 decapsulated, ~3 dropped, found $MARKER_COUNT)"
-else
-    print_fail "Whitelist enforcement issue (expected ~3 markers, found $MARKER_COUNT)"
-    if [ "$DEBUG_TCPDUMP" = "1" ]; then
-        echo "  [DEBUG] Showing packet sources:"
-        docker exec $XDP_TARGET tcpdump -n -r $CAPTURE_FILE 2>&1 | grep "10.200.0"
+    # Should see markers from whitelisted source only (exactly 3, not 6)
+    MARKER_COUNT=$(docker exec $XDP_TARGET tcpdump -A -r $CAPTURE_FILE 2>/dev/null | grep -o "TEST_GRE_IPV4_BASIC" | wc -l || echo 0)
+    if [ "$MARKER_COUNT" -eq 3 ]; then
+        print_pass "Whitelist enforcement working correctly (3 decapsulated, 3 dropped)"
+    elif [ "$MARKER_COUNT" -ge 3 ] && [ "$MARKER_COUNT" -lt 6 ]; then
+        print_pass "Whitelist enforcement working correctly (~3 decapsulated, ~3 dropped, found $MARKER_COUNT)"
+    else
+        print_fail "Whitelist enforcement issue (expected ~3 markers, found $MARKER_COUNT)"
+        if [ "$DEBUG_TCPDUMP" = "1" ]; then
+            echo "  [DEBUG] Showing packet sources:"
+            docker exec $XDP_TARGET tcpdump -n -r $CAPTURE_FILE 2>&1 | grep "10.200.0"
+        fi
     fi
+else
+    print_pass "Skipped (whitelist disabled)"
 fi
 
 print_section "Test 19: High Volume Test"
@@ -831,26 +854,30 @@ fi
 
 print_section "Test 26: IPv6 Non-Whitelisted Source (Should Drop)"
 run_test
-print_test "Sending IPv6 tunnel packets from non-whitelisted source"
+if [ "$WHITELIST_ENABLED" = "1" ]; then
+    print_test "Sending IPv6 tunnel packets from non-whitelisted source"
 
-start_capture ""
+    start_capture ""
 
-# Send GRE from untrusted IPv6 source - should be dropped
-docker exec $UNTRUSTED_SOURCE python3 /usr/local/bin/generate-packets.py \
-    --type gre-ipv6-outer-ipv4-inner \
-    --src $UNTRUSTED_SOURCE_IPV6 \
-    --dst $XDP_TARGET_IPV6 \
-    --inner-src $INNER_CLIENT_IP \
-    --count 5
+    # Send GRE from untrusted IPv6 source - should be dropped
+    docker exec $UNTRUSTED_SOURCE python3 /usr/local/bin/generate-packets.py \
+        --type gre-ipv6-outer-ipv4-inner \
+        --src $UNTRUSTED_SOURCE_IPV6 \
+        --dst $XDP_TARGET_IPV6 \
+        --inner-src $INNER_CLIENT_IP \
+        --count 5
 
-sleep 2
-stop_capture
+    sleep 2
+    stop_capture
 
-# Verify that the inner payload is NOT visible (packet was dropped, not decapsulated)
-if verify_not_decapsulated "TEST_GRE_IPV6_OUTER_IPV4_INNER"; then
-    print_pass "Non-whitelisted IPv6 tunnel traffic dropped successfully (payload not visible)"
+    # Verify that the inner payload is NOT visible (packet was dropped, not decapsulated)
+    if verify_not_decapsulated "TEST_GRE_IPV6_OUTER_IPV4_INNER"; then
+        print_pass "Non-whitelisted IPv6 tunnel traffic dropped successfully (payload not visible)"
+    else
+        print_fail "Non-whitelisted IPv6 traffic was incorrectly decapsulated"
+    fi
 else
-    print_fail "Non-whitelisted IPv6 traffic was incorrectly decapsulated"
+    print_pass "Skipped (whitelist disabled)"
 fi
 
 print_section "Test 27: Mixed IPv4/IPv6 Tunnel Traffic"

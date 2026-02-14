@@ -76,6 +76,7 @@ struct {
 } XDP_RUN_CONFIG(xdp_tun_decap);
 #endif
 
+#ifdef ENABLE_WHITELIST
 /*
  * Whitelist map for lock-free lookups (IPv4)
  *
@@ -113,6 +114,7 @@ struct {
 	__type(value, struct whitelist_value);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } tun_decap_whitelist_v6 SEC(".maps");
+#endif /* ENABLE_WHITELIST */
 
 #ifdef ENABLE_STATS
 /*
@@ -158,6 +160,7 @@ static __always_inline struct tun_decap_stats *get_stats(void)
 }
 #endif
 
+#ifdef ENABLE_WHITELIST
 /*
  * Check if IPv4 source IP is in whitelist
  *
@@ -192,6 +195,7 @@ static __always_inline int is_whitelisted_v6(const struct in6_addr *ip6_addr)
 	val = bpf_map_lookup_elem(&tun_decap_whitelist_v6, &key);
 	return val != NULL;
 }
+#endif /* ENABLE_WHITELIST */
 
 /*
  * Perform decapsulation by removing outer headers
@@ -676,11 +680,13 @@ int xdp_tun_decap(struct xdp_md *ctx)
 				return XDP_DROP;
 			}
 
+#ifdef ENABLE_WHITELIST
 			if (unlikely(!is_whitelisted(iph->saddr))) {
 				if (stats)
 					stats->drop_not_whitelisted++;
 				return XDP_DROP;
 			}
+#endif
 
 			/* Dispatch to protocol-specific handler */
 			if (iph->protocol == IPPROTO_GRE) {
@@ -746,11 +752,13 @@ int xdp_tun_decap(struct xdp_md *ctx)
 			 * Hoisted from individual handlers to avoid duplicate
 			 * hash lookups when inlined.
 			 */
+#ifdef ENABLE_WHITELIST
 			if (unlikely(!is_whitelisted_v6(&ip6h->saddr))) {
 				if (stats)
 					stats->drop_not_whitelisted++;
 				return XDP_DROP;
 			}
+#endif
 
 			if (ip6h->nexthdr == IPPROTO_GRE) {
 				if (unlikely(cfg_global.disable_gre)) {

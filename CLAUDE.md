@@ -22,6 +22,12 @@ This is an XDP (eXpress Data Path) program for high-performance decapsulation of
 # Full build (vmlinux.h + BPF object + skeleton)
 make all
 
+# Build without whitelist enforcement (removes whitelist maps entirely)
+make all WHITELIST=0
+
+# Build with both statistics and whitelist disabled
+make all STATS=0 WHITELIST=0
+
 # Generate vmlinux.h from running kernel's BTF
 make vmlinux
 
@@ -98,6 +104,10 @@ make analyze
 # Compare stats-enabled vs disabled instruction counts
 make analyze STATS=0
 make analyze STATS=1
+
+# Compare whitelist-enabled vs disabled instruction counts
+make analyze WHITELIST=0
+make analyze WHITELIST=1
 ```
 
 The benchmark binary (`src/test/bench_decap.c`) uses `BPF_PROG_TEST_RUN` with `repeat=N` for kernel-measured per-packet latency, and `perf_event_open()` for hardware PMU counters (instructions, cycles, IPC, L1 cache misses). It covers 18 packet types across all code paths (decap, drop, passthrough).
@@ -161,15 +171,16 @@ Requires: `perf`, `bpftool`, `docker`, and FlameGraph tools in `tools/flamegraph
 
 ### BPF Maps
 
-Three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`):
+Up to three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`).
+Whitelist maps only exist when compiled with `WHITELIST=1` (default):
 
-1. **IPv4 Whitelist** (`BPF_MAP_TYPE_PERCPU_HASH`):
+1. **IPv4 Whitelist** (`BPF_MAP_TYPE_PERCPU_HASH`) [requires `ENABLE_WHITELIST`]:
    - Key: IPv4 address (32-bit, network byte order)
    - Value: `struct whitelist_value` (simple flag)
    - Lock-free per-CPU lookups for performance
    - Map name: `tun_decap_whitelist`
 
-1b. **IPv6 Whitelist** (`BPF_MAP_TYPE_PERCPU_HASH`):
+1b. **IPv6 Whitelist** (`BPF_MAP_TYPE_PERCPU_HASH`) [requires `ENABLE_WHITELIST`]:
    - Key: IPv6 address (128-bit, struct ipv6_addr with 4x 32-bit words)
    - Value: `struct whitelist_value` (simple flag)
    - Separate map for efficient key management
@@ -229,7 +240,7 @@ Three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`):
 - CPU pinning (`sched_setaffinity`) for stable measurements
 - CLI: `--repeat N`, `--warmup N`, `--no-hwcounters`
 
-**Code Path Operation Counts** (with ENABLE_STATS):
+**Code Path Operation Counts** (with ENABLE_STATS and ENABLE_WHITELIST):
 
 | Path | Config | Stats | Whitelist | adjust_head | Map lookups | Helpers |
 |------|:------:|:-----:|:---------:|:-----------:|:-----------:|:-------:|
@@ -240,6 +251,7 @@ Three pinned maps (accessible via `/sys/fs/bpf/tun_decap_*`):
 | Passthrough | 1 | 1 | 0 | 0 | 2 | 2 |
 
 Without ENABLE_STATS: subtract 1 from map lookups and helpers (no stats lookup).
+Without ENABLE_WHITELIST: subtract 1 from map lookups and helpers on paths that use whitelist (decap, drop-wl, drop-malformed). The "Drop (not whitelisted)" path is eliminated entirely.
 
 **Profiling Script** (`scripts/profile.sh`):
 - Orchestrates perf record during Docker integration test traffic
@@ -304,6 +316,7 @@ Load multiple programs with: `xdp-loader load -m native eth0 tun_decap.bpf.o oth
 - **Must use `-O2`**: Verifier requires optimized code
 - **Must include `-g`**: Generates BTF debug info for CO-RE
 - **Target**: `-target bpf -mcpu=v3` (kernel 5.1+, enables atomics/ALU32)
+- **Compile-time flags**: `ENABLE_STATS` (via `STATS=1`), `ENABLE_WHITELIST` (via `WHITELIST=1`, default)
 
 ## Managing BPF Maps
 

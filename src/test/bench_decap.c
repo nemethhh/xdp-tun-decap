@@ -167,6 +167,7 @@ static void hw_counters_disable_read(struct hw_counters *hw, struct hw_values *v
 		vals->cache_misses = (double)tmp;
 }
 
+#ifdef ENABLE_WHITELIST
 /* ===== Whitelist helpers ===== */
 
 static int whitelist_add(int map_fd, __u32 ip_be)
@@ -187,14 +188,17 @@ static int whitelist_v6_add(int map_fd, const __u32 ip6_addr[4])
 
 	return bpf_map_update_elem(map_fd, &key, &val, BPF_ANY);
 }
+#endif /* ENABLE_WHITELIST */
 
 /* ===== Code path classification for operation counts ===== */
 
 enum bench_path {
-	PATH_DECAP,       /* tunnel decapsulated: config + stats? + whitelist + adjust_head */
+	PATH_DECAP,       /* tunnel decapsulated: config + stats? + whitelist? + adjust_head */
+#ifdef ENABLE_WHITELIST
 	PATH_DROP_WL,     /* dropped (not whitelisted): config + stats? + whitelist */
+#endif
 	PATH_DROP_FRAG,   /* dropped (fragmented): config + stats? */
-	PATH_DROP_MALFORM, /* dropped (malformed after whitelist): config + stats? + whitelist */
+	PATH_DROP_MALFORM, /* dropped (malformed after whitelist): config + stats? + whitelist? */
 	PATH_PASSTHROUGH, /* non-tunnel pass: config + stats? */
 };
 
@@ -206,13 +210,25 @@ static void compute_ops(enum bench_path path, int *map_lookups, int *helpers)
 #endif
 	switch (path) {
 	case PATH_DECAP:
+#ifdef ENABLE_WHITELIST
 		*map_lookups = base + 1; /* + whitelist */
 		*helpers = base + 2;     /* + whitelist + adjust_head */
+#else
+		*map_lookups = base;
+		*helpers = base + 1;     /* + adjust_head only */
+#endif
 		break;
+#ifdef ENABLE_WHITELIST
 	case PATH_DROP_WL:
+#endif
 	case PATH_DROP_MALFORM:
+#ifdef ENABLE_WHITELIST
 		*map_lookups = base + 1;
 		*helpers = base + 1;
+#else
+		*map_lookups = base;
+		*helpers = base;
+#endif
 		break;
 	case PATH_DROP_FRAG:
 	case PATH_PASSTHROUGH:
@@ -285,14 +301,22 @@ static unsigned char pkt_gre_with_csum[] = {
 static struct bench_entry bench_entries[] = {
     /* GRE with IPv4 outer */
     { "GRE IPv4 (whitelisted)",        pkt_gre_whitelisted,       sizeof(pkt_gre_whitelisted),       XDP_PASS, PATH_DECAP },
+#ifdef ENABLE_WHITELIST
     { "GRE IPv4 (blocked)",            pkt_gre_blocked,           sizeof(pkt_gre_blocked),           XDP_DROP, PATH_DROP_WL },
+#else
+    { "GRE IPv4 (no whitelist)",       pkt_gre_blocked,           sizeof(pkt_gre_blocked),           XDP_PASS, PATH_DECAP },
+#endif
     { "GRE with key (whitelisted)",    pkt_gre_with_key,          sizeof(pkt_gre_with_key),          XDP_PASS, PATH_DECAP },
     { "GRE with csum (whitelisted)",   pkt_gre_with_csum,         sizeof(pkt_gre_with_csum),         XDP_PASS, PATH_DECAP },
     { "GRE IPv6 inner (whitelisted)",  pkt_gre_ipv6_inner,        sizeof(pkt_gre_ipv6_inner),        XDP_PASS, PATH_DECAP },
 
     /* IPIP */
     { "IPIP IPv4 (whitelisted)",       pkt_ipip_whitelisted,      sizeof(pkt_ipip_whitelisted),      XDP_PASS, PATH_DECAP },
+#ifdef ENABLE_WHITELIST
     { "IPIP IPv4 (blocked)",           pkt_ipip_blocked,          sizeof(pkt_ipip_blocked),          XDP_DROP, PATH_DROP_WL },
+#else
+    { "IPIP IPv4 (no whitelist)",      pkt_ipip_blocked,          sizeof(pkt_ipip_blocked),          XDP_PASS, PATH_DECAP },
+#endif
 
     /* IPv6-in-IPv4 */
     { "IPv6-in-IPv4 (whitelisted)",    pkt_ipv6_in_ipv4,          sizeof(pkt_ipv6_in_ipv4),          XDP_PASS, PATH_DECAP },
@@ -400,6 +424,11 @@ static void print_header(int repeat, int warmup, int use_hw)
 	       ", stats=on"
 #else
 	       ", stats=off"
+#endif
+#ifdef ENABLE_WHITELIST
+	       ", whitelist=on"
+#else
+	       ", whitelist=off"
 #endif
 	       ")\n\n",
 	       repeat, warmup);
@@ -518,7 +547,7 @@ int main(int argc, char **argv)
 	int warmup = DEFAULT_WARMUP;
 	int use_hw = 1;
 	int opt, err;
-	int prog_fd, wl_fd, wl_v6_fd;
+	int prog_fd;
 
 	/* Parse arguments */
 	while ((opt = getopt_long(argc, argv, "r:w:Hh", long_opts, NULL)) != -1) {
@@ -578,8 +607,6 @@ int main(int argc, char **argv)
 	}
 
 	prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
-	wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 
 	/* Config is a global variable in .bss (zero = all enabled) */
 	skel->bss->cfg_global.disabled = 0;
@@ -587,7 +614,10 @@ int main(int argc, char **argv)
 	skel->bss->cfg_global.disable_ipip = 0;
 	skel->bss->cfg_global.disable_stats = 0;
 
+#ifdef ENABLE_WHITELIST
 	/* Set up whitelists: add all IPs that whitelisted tests need */
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
+	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_2);
 
@@ -597,6 +627,7 @@ int main(int argc, char **argv)
 	whitelist_v6_add(wl_v6_fd, v6_1);
 	whitelist_v6_add(wl_v6_fd, v6_2);
 	whitelist_v6_add(wl_v6_fd, v6_3);
+#endif
 
 	/* Initialize hardware counters */
 	if (use_hw) {

@@ -83,6 +83,7 @@ static int run_xdp_test(int prog_fd, void *pkt, size_t pkt_len, __u32 *retval, v
 	return 0;
 }
 
+#ifdef ENABLE_WHITELIST
 /*
  * Add IPv4 address to whitelist map
  *
@@ -150,6 +151,7 @@ static int whitelist_v6_clear(int map_fd)
 
 	return 0;
 }
+#endif /* ENABLE_WHITELIST */
 
 #ifdef ENABLE_STATS
 /*
@@ -202,18 +204,20 @@ static void test_gre_whitelisted(struct tun_decap_bpf *skel)
 {
 	const char *name = "GRE decap (whitelisted)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	__u32 retval;
 	unsigned char data_out[256];
 	size_t data_out_len = sizeof(data_out);
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Add whitelisted IP (use little-endian representation for x86) */
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	err = whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
 	if (err < 0) {
 		TEST_FAIL(name, "Failed to add whitelist entry");
 		return;
 	}
+#endif
 
 	/* Run test */
 	err = run_xdp_test(prog_fd, pkt_gre_whitelisted, PKT_GRE_WHITELISTED_LEN, &retval, data_out,
@@ -252,6 +256,7 @@ static void test_gre_whitelisted(struct tun_decap_bpf *skel)
 	TEST_PASS(name);
 }
 
+#ifdef ENABLE_WHITELIST
 /*
  * Test: GRE packet from non-whitelisted source should be dropped
  */
@@ -299,6 +304,7 @@ static void test_gre_blocked(struct tun_decap_bpf *skel)
 
 	TEST_PASS(name);
 }
+#endif /* ENABLE_WHITELIST */
 
 /*
  * Test: GRE packet with Key option
@@ -307,14 +313,16 @@ static void test_gre_with_key(struct tun_decap_bpf *skel)
 {
 	const char *name = "GRE decap (with key option)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	__u32 retval;
 	unsigned char data_out[256];
 	size_t data_out_len = sizeof(data_out);
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Add whitelisted IP (10.0.0.2) */
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_2);
+#endif
 
 	/* Run test */
 	err = run_xdp_test(prog_fd, pkt_gre_with_key, PKT_GRE_WITH_KEY_LEN, &retval, data_out,
@@ -350,14 +358,16 @@ static void test_ipip_whitelisted(struct tun_decap_bpf *skel)
 {
 	const char *name = "IPIP decap (whitelisted)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	__u32 retval;
 	unsigned char data_out[256];
 	size_t data_out_len = sizeof(data_out);
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Add whitelisted IP */
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_2);
+#endif
 
 	/* Run test */
 	err = run_xdp_test(prog_fd, pkt_ipip_whitelisted, PKT_IPIP_WHITELISTED_LEN, &retval,
@@ -386,6 +396,7 @@ static void test_ipip_whitelisted(struct tun_decap_bpf *skel)
 	TEST_PASS(name);
 }
 
+#ifdef ENABLE_WHITELIST
 /*
  * Test: IPIP packet from non-whitelisted source
  */
@@ -411,6 +422,7 @@ static void test_ipip_blocked(struct tun_decap_bpf *skel)
 
 	TEST_PASS(name);
 }
+#endif /* ENABLE_WHITELIST */
 
 /*
  * Test: Non-tunnel TCP traffic passes through unchanged
@@ -530,12 +542,14 @@ static void test_gre_truncated(struct tun_decap_bpf *skel)
 {
 	const char *name = "GRE drop (truncated)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	__u32 retval;
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Add to whitelist so we test the malformed check, not whitelist */
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
+#endif
 
 	err = run_xdp_test(prog_fd, pkt_gre_truncated, PKT_GRE_TRUNCATED_LEN, &retval, NULL, NULL);
 	if (err < 0) {
@@ -560,14 +574,16 @@ static void test_gre_ipv6_inner(struct tun_decap_bpf *skel)
 {
 	const char *name = "GRE decap (IPv6 inner)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	__u32 retval;
 	unsigned char data_out[256];
 	size_t data_out_len = sizeof(data_out);
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Add whitelisted IP */
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
+#endif
 
 	/* Run test */
 	err = run_xdp_test(prog_fd, pkt_gre_ipv6_inner, PKT_GRE_IPV6_INNER_LEN, &retval, data_out,
@@ -611,14 +627,16 @@ static void test_ipv6_in_ipv4(struct tun_decap_bpf *skel)
 {
 	const char *name = "IPv6-in-IPv4 decap (proto 41)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	__u32 retval;
 	unsigned char data_out[256];
 	size_t data_out_len = sizeof(data_out);
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Add whitelisted IP */
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_2);
+#endif
 
 	/* Run test */
 	err = run_xdp_test(prog_fd, pkt_ipv6_in_ipv4, PKT_IPV6_IN_IPV4_LEN, &retval, data_out,
@@ -662,19 +680,21 @@ static void test_ipv6_outer_gre_ipv4(struct tun_decap_bpf *skel)
 {
 	const char *name = "IPv6 outer + GRE + IPv4 inner (whitelisted)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 	__u32 retval;
 	unsigned char data_out[256];
 	size_t data_out_len = sizeof(data_out);
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Add IPv6 source (2001:db8::1) to whitelist */
+	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 	__u32 ipv6_addr[] = TEST_IPV6_WHITELISTED_1;
 	err = whitelist_v6_add(wl_v6_fd, ipv6_addr);
 	if (err < 0) {
 		TEST_FAIL(name, "Failed to add IPv6 to whitelist");
 		return;
 	}
+#endif
 
 	/* Run test */
 	err = run_xdp_test(prog_fd, pkt_ipv6_outer_gre_ipv4, PKT_IPV6_OUTER_GRE_IPV4_LEN, &retval,
@@ -718,19 +738,21 @@ static void test_ipv4_in_ipv6(struct tun_decap_bpf *skel)
 {
 	const char *name = "IPv4-in-IPv6 decap (whitelisted)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 	__u32 retval;
 	unsigned char data_out[256];
 	size_t data_out_len = sizeof(data_out);
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Add IPv6 source (2001:db8::2) to whitelist */
+	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 	__u32 ipv6_addr[] = TEST_IPV6_WHITELISTED_2;
 	err = whitelist_v6_add(wl_v6_fd, ipv6_addr);
 	if (err < 0) {
 		TEST_FAIL(name, "Failed to add IPv6 to whitelist");
 		return;
 	}
+#endif
 
 	/* Run test */
 	err = run_xdp_test(prog_fd, pkt_ipv4_in_ipv6, PKT_IPV4_IN_IPV6_LEN, &retval, data_out,
@@ -774,19 +796,21 @@ static void test_ipv6_in_ipv6(struct tun_decap_bpf *skel)
 {
 	const char *name = "IPv6-in-IPv6 decap (whitelisted)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 	__u32 retval;
 	unsigned char data_out[256];
 	size_t data_out_len = sizeof(data_out);
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Add IPv6 source (2001:db8::3) to whitelist */
+	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 	__u32 ipv6_addr[] = TEST_IPV6_WHITELISTED_3;
 	err = whitelist_v6_add(wl_v6_fd, ipv6_addr);
 	if (err < 0) {
 		TEST_FAIL(name, "Failed to add IPv6 to whitelist");
 		return;
 	}
+#endif
 
 	/* Run test */
 	err = run_xdp_test(prog_fd, pkt_ipv6_in_ipv6, PKT_IPV6_IN_IPV6_LEN, &retval, data_out,
@@ -823,6 +847,7 @@ static void test_ipv6_in_ipv6(struct tun_decap_bpf *skel)
 	TEST_PASS(name);
 }
 
+#ifdef ENABLE_WHITELIST
 /*
  * Test: IPv6 outer header packet from non-whitelisted source (should drop)
  */
@@ -872,6 +897,7 @@ static void test_ipv6_outer_blocked(struct tun_decap_bpf *skel)
 
 	TEST_PASS(name);
 }
+#endif /* ENABLE_WHITELIST */
 
 /*
  * Test: Fragmented GRE packet is dropped
@@ -880,12 +906,14 @@ static void test_gre_fragmented_drop(struct tun_decap_bpf *skel)
 {
 	const char *name = "GRE drop (fragmented)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	__u32 retval;
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Ensure source is whitelisted - we're testing fragment drop, not whitelist */
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
+#endif
 
 #ifdef ENABLE_STATS
 	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
@@ -924,11 +952,13 @@ static void test_ipip_fragmented_drop(struct tun_decap_bpf *skel)
 {
 	const char *name = "IPIP drop (fragmented)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	__u32 retval;
 	int err;
 
+#ifdef ENABLE_WHITELIST
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_2);
+#endif
 
 #ifdef ENABLE_STATS
 	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
@@ -967,13 +997,15 @@ static void test_ipv6_fragment_ext_drop(struct tun_decap_bpf *skel)
 {
 	const char *name = "IPv6 drop (fragment extension header)";
 	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
-	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 	__u32 retval;
 	int err;
 
+#ifdef ENABLE_WHITELIST
 	/* Ensure IPv6 source is whitelisted */
+	int wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
 	__u32 ipv6_addr[] = TEST_IPV6_WHITELISTED_1;
 	whitelist_v6_add(wl_v6_fd, ipv6_addr);
+#endif
 
 #ifdef ENABLE_STATS
 	int stats_fd = bpf_map__fd(skel->maps.tun_decap_stats);
@@ -1123,7 +1155,9 @@ int main(int argc, char **argv)
 	printf("BPF program loaded successfully\n\n");
 
 	/* Initialize: clear whitelist and reset stats */
+#ifdef ENABLE_WHITELIST
 	whitelist_clear(bpf_map__fd(skel->maps.tun_decap_whitelist));
+#endif
 #ifdef ENABLE_STATS
 	reset_stats(bpf_map__fd(skel->maps.tun_decap_stats));
 #endif
@@ -1142,18 +1176,24 @@ int main(int argc, char **argv)
 
 	/* IPv4 outer header tests */
 	test_gre_whitelisted(skel);
+#ifdef ENABLE_WHITELIST
 	test_gre_blocked(skel);
+#endif
 	test_gre_with_key(skel);
 	test_gre_ipv6_inner(skel);
 	test_ipip_whitelisted(skel);
+#ifdef ENABLE_WHITELIST
 	test_ipip_blocked(skel);
+#endif
 	test_ipv6_in_ipv4(skel);
 
 	/* IPv6 outer header tests */
 	test_ipv6_outer_gre_ipv4(skel);
 	test_ipv4_in_ipv6(skel);
 	test_ipv6_in_ipv6(skel);
+#ifdef ENABLE_WHITELIST
 	test_ipv6_outer_blocked(skel);
+#endif
 
 	/* Fragment drop tests */
 	test_gre_fragmented_drop(skel);

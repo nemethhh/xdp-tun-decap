@@ -7,7 +7,7 @@ High-performance XDP program for decapsulating GRE and IPIP tunnel traffic with 
 - **GRE decapsulation** (protocol 47) - RFC 2784/2890 compliant
 - **IPIP decapsulation** (protocol 4) - RFC 2003 compliant
 - **libxdp multi-program support** - Works alongside other XDP programs
-- **Fast whitelist lookups** - O(1) hash map lookups with RCU protection
+- **Fast whitelist lookups** - O(1) hash map lookups with RCU protection (compile-time configurable)
 - **CO-RE support** - Compile Once, Run Everywhere portability
 - **Comprehensive statistics** - 14 per-CPU counters for monitoring (compile-time configurable)
 
@@ -49,6 +49,30 @@ sudo make verify
 make help
 ```
 
+### Build Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `WHITELIST=0` | `1` (enabled) | Disable whitelist enforcement. Removes whitelist maps and lookups entirely for maximum throughput when source filtering is not needed. |
+| `STATS=1` | `0` (disabled) | Enable per-CPU statistics counters. Adds one map lookup per packet for 14 monitoring counters. |
+
+```bash
+# Build without whitelist (no source IP filtering)
+make all WHITELIST=0
+
+# Build with statistics enabled
+make all STATS=1
+
+# Build with both disabled for maximum performance
+make all WHITELIST=0 STATS=0
+
+# Compare instruction counts
+make analyze WHITELIST=1    # ~460 instructions
+make analyze WHITELIST=0    # ~419 instructions
+```
+
+Options must be passed consistently to all make targets in a session (e.g., `make all WHITELIST=0 && make test WHITELIST=0`).
+
 ## Usage
 
 ### Loading the XDP program
@@ -62,6 +86,8 @@ sudo ip link set dev eth0 xdp obj build/tun_decap.bpf.o sec xdp
 ```
 
 ### Managing the whitelist
+
+> **Note:** Whitelist maps only exist when built with `WHITELIST=1` (the default). When built with `WHITELIST=0`, all tunnel traffic is decapsulated without source IP filtering.
 
 The whitelist map is pinned at `/sys/fs/bpf/tun_decap_whitelist`.
 
@@ -127,7 +153,7 @@ Incoming Packet
       ▼
 ┌─────────────────┐
 │ Parse Ethernet  │
-│ Parse IPv4      │
+│ Parse IPv4/IPv6 │
 └────────┬────────┘
          │
     ┌────┴────┐
@@ -140,7 +166,7 @@ Incoming Packet
     │    │    │
     ▼    ▼    │
 ┌────────────┐│
-│ Whitelist  ││
+│ Whitelist  ││  (only with WHITELIST=1)
 │   Check    ││
 └─────┬──────┘│
       │       │
@@ -161,13 +187,13 @@ Incoming Packet
 
 ### Map Definitions
 
-| Map | Type | Purpose |
-|-----|------|---------|
-| `tun_decap_whitelist` | HASH | IPv4 source whitelist (RCU-protected) |
-| `tun_decap_whitelist_v6` | HASH | IPv6 source whitelist (RCU-protected) |
-| `tun_decap_stats` | PERCPU_ARRAY | Per-CPU statistics (single struct with 14 counters) |
+| Map | Type | Purpose | Compile flag |
+|-----|------|---------|--------------|
+| `tun_decap_whitelist` | HASH | IPv4 source whitelist (RCU-protected) | `WHITELIST=1` |
+| `tun_decap_whitelist_v6` | HASH | IPv6 source whitelist (RCU-protected) | `WHITELIST=1` |
+| `tun_decap_stats` | PERCPU_ARRAY | Per-CPU statistics (single struct with 14 counters) | `STATS=1` |
 
-**Note:** Runtime configuration is stored as a BPF global variable (`cfg_global`), accessible via the program's `.bss` map.
+**Note:** Runtime configuration is stored as a BPF global variable (`cfg_global`), accessible via the program's `.bss` map. Maps marked with a compile flag are only present when built with that flag enabled.
 
 ## libxdp Multi-Program Support
 

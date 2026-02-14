@@ -49,6 +49,15 @@ else
     STATS_DEFINES :=
 endif
 
+# Whitelist support (default: enabled for security)
+# Use WHITELIST=0 to compile without whitelist enforcement
+WHITELIST ?= 1
+ifeq ($(WHITELIST),1)
+    WHITELIST_DEFINES := -DENABLE_WHITELIST
+else
+    WHITELIST_DEFINES :=
+endif
+
 # BPF compilation flags
 # -O2: Required for BPF (verifier needs optimized code)
 # -g: Generate BTF debug info for CO-RE
@@ -60,6 +69,7 @@ BPF_CFLAGS := -O2 -g -Wall -Wextra \
               -D__TARGET_ARCH_$(ARCH) \
               $(XDP_DEFINES) \
               $(STATS_DEFINES) \
+              $(WHITELIST_DEFINES) \
               -I$(BPF_DIR) \
               -I$(INCLUDE_DIR) \
               $(XDP_INCLUDES)
@@ -67,6 +77,7 @@ BPF_CFLAGS := -O2 -g -Wall -Wextra \
 # Userspace compilation flags
 USER_CFLAGS := -O2 -g -Wall -Wextra \
                $(STATS_DEFINES) \
+               $(WHITELIST_DEFINES) \
                -I$(INCLUDE_DIR) \
                -I$(BUILD_DIR)
 
@@ -323,7 +334,7 @@ profile-quick: all
 # Show per-function BPF instruction counts and program size
 .PHONY: analyze
 analyze: $(BPF_OBJ)
-	@echo "=== BPF Instruction Analysis (stats=$(STATS)) ==="
+	@echo "=== BPF Instruction Analysis (stats=$(STATS), whitelist=$(WHITELIST)) ==="
 	@echo ""
 	@echo "Block breakdown:"
 	@llvm-objdump -d $< | awk '/^[0-9a-f]+ <.*>:/{name=$$2; count=0; next} /^[[:space:]]+[0-9a-f]+:/{count++; total++} /^$$/{if(name) printf "  %-40s %d instructions\n", name, count; name=""}  END{if(name) printf "  %-40s %d instructions\n", name, count; printf "\n  %-40s %d instructions\n", "TOTAL (xdp section)", total}'
@@ -377,6 +388,7 @@ help:
 	@echo ""
 	@echo "Build Options:"
 	@echo "  STATS=1           - Compile with statistics support"
+	@echo "  WHITELIST=0       - Compile without whitelist enforcement"
 	@echo ""
 	@echo "Requirements:"
 	@echo "  - Linux kernel 5.17+ with CONFIG_DEBUG_INFO_BTF=y"

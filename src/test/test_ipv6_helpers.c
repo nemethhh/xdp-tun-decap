@@ -428,8 +428,6 @@ void test_map_pin_paths()
 	          "whitelist_v6 path should match");
 	ASSERT_EQ(strcmp(MAP_PIN_PATH_STATS, "/sys/fs/bpf/tun_decap_stats"), 0,
 	          "stats path should match");
-	ASSERT_EQ(strcmp(MAP_PIN_PATH_CONFIG, "/sys/fs/bpf/tun_decap_config"), 0,
-	          "config path should match");
 
 	TEST_PASS(test_name);
 }

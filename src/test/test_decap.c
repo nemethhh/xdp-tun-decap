@@ -86,21 +86,12 @@ static int run_xdp_test(int prog_fd, void *pkt, size_t pkt_len, __u32 *retval, v
 /*
  * Add IPv4 address to whitelist map
  *
- * IMPORTANT: For PERCPU_HASH maps, we must provide an array of values,
- * one for each CPU. From userspace, bpf_map_update_elem() requires
- * values[num_cpus], not just a single value.
+ * Uses BPF_MAP_TYPE_HASH (not PERCPU), so a single value suffices.
  */
 static int whitelist_add(int map_fd, __u32 ip_be)
 {
-	int ncpus = libbpf_num_possible_cpus();
-	struct whitelist_value values[ncpus];
-
-	/* Initialize all per-CPU values */
-	for (int i = 0; i < ncpus; i++) {
-		values[i].allowed = 1;
-	}
-
-	return bpf_map_update_elem(map_fd, &ip_be, values, BPF_ANY);
+	struct whitelist_value val = { .allowed = 1 };
+	return bpf_map_update_elem(map_fd, &ip_be, &val, BPF_ANY);
 }
 
 /*
@@ -111,22 +102,15 @@ static int whitelist_add(int map_fd, __u32 ip_be)
  */
 static int whitelist_v6_add(int map_fd, const __u32 ip6_addr[4])
 {
-	int ncpus = libbpf_num_possible_cpus();
-	struct whitelist_value values[ncpus];
+	struct whitelist_value val = { .allowed = 1 };
 	struct ipv6_addr key;
 
-	/* Copy IPv6 address to key structure */
 	key.addr[0] = ip6_addr[0];
 	key.addr[1] = ip6_addr[1];
 	key.addr[2] = ip6_addr[2];
 	key.addr[3] = ip6_addr[3];
 
-	/* Initialize all per-CPU values */
-	for (int i = 0; i < ncpus; i++) {
-		values[i].allowed = 1;
-	}
-
-	return bpf_map_update_elem(map_fd, &key, values, BPF_ANY);
+	return bpf_map_update_elem(map_fd, &key, &val, BPF_ANY);
 }
 
 /*
@@ -1144,26 +1128,14 @@ int main(int argc, char **argv)
 	reset_stats(bpf_map__fd(skel->maps.tun_decap_stats));
 #endif
 
-	/* Initialize config map - enable all tunnel processing */
-	{
-		int cfg_fd = bpf_map__fd(skel->maps.tun_decap_config);
-		struct tun_decap_config cfg = {
-		    .disabled = 0,     /* Enable processing (0 = enabled) */
-		    .disable_gre = 0,  /* Enable GRE (0 = enabled) */
-		    .disable_ipip = 0, /* Enable IPIP (0 = enabled) */
-		    .disable_stats = 0 /* Enable statistics (0 = enabled) */
-		};
-		__u32 cfg_key = 0;
+	/* Config is a global variable in .bss (zero = all enabled).
+	 * Set explicitly via skeleton to verify access path works. */
+	skel->bss->cfg_global.disabled = 0;
+	skel->bss->cfg_global.disable_gre = 0;
+	skel->bss->cfg_global.disable_ipip = 0;
+	skel->bss->cfg_global.disable_stats = 0;
 
-		err = bpf_map_update_elem(cfg_fd, &cfg_key, &cfg, BPF_ANY);
-		if (err < 0) {
-			fprintf(stderr, "Failed to initialize config map: %s\n", strerror(errno));
-			tun_decap_bpf__destroy(skel);
-			return 1;
-		}
-	}
-
-	printf("Config map initialized (all processing enabled)\n");
+	printf("Config global initialized (all processing enabled)\n");
 
 	/* Run tests */
 	printf("Running tests...\n\n");

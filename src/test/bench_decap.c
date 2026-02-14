@@ -171,18 +171,13 @@ static void hw_counters_disable_read(struct hw_counters *hw, struct hw_values *v
 
 static int whitelist_add(int map_fd, __u32 ip_be)
 {
-	int ncpus = libbpf_num_possible_cpus();
-	struct whitelist_value values[ncpus];
-
-	for (int i = 0; i < ncpus; i++)
-		values[i].allowed = 1;
-	return bpf_map_update_elem(map_fd, &ip_be, values, BPF_ANY);
+	struct whitelist_value val = { .allowed = 1 };
+	return bpf_map_update_elem(map_fd, &ip_be, &val, BPF_ANY);
 }
 
 static int whitelist_v6_add(int map_fd, const __u32 ip6_addr[4])
 {
-	int ncpus = libbpf_num_possible_cpus();
-	struct whitelist_value values[ncpus];
+	struct whitelist_value val = { .allowed = 1 };
 	struct ipv6_addr key;
 
 	key.addr[0] = ip6_addr[0];
@@ -190,9 +185,7 @@ static int whitelist_v6_add(int map_fd, const __u32 ip6_addr[4])
 	key.addr[2] = ip6_addr[2];
 	key.addr[3] = ip6_addr[3];
 
-	for (int i = 0; i < ncpus; i++)
-		values[i].allowed = 1;
-	return bpf_map_update_elem(map_fd, &key, values, BPF_ANY);
+	return bpf_map_update_elem(map_fd, &key, &val, BPF_ANY);
 }
 
 /* ===== Code path classification for operation counts ===== */
@@ -207,7 +200,7 @@ enum bench_path {
 
 static void compute_ops(enum bench_path path, int *map_lookups, int *helpers)
 {
-	int base = 1; /* config map lookup always happens */
+	int base = 0; /* config is a global variable, no map lookup */
 #ifdef ENABLE_STATS
 	base += 1; /* stats map lookup */
 #endif
@@ -525,7 +518,7 @@ int main(int argc, char **argv)
 	int warmup = DEFAULT_WARMUP;
 	int use_hw = 1;
 	int opt, err;
-	int prog_fd, wl_fd, wl_v6_fd, cfg_fd;
+	int prog_fd, wl_fd, wl_v6_fd;
 
 	/* Parse arguments */
 	while ((opt = getopt_long(argc, argv, "r:w:Hh", long_opts, NULL)) != -1) {
@@ -587,19 +580,12 @@ int main(int argc, char **argv)
 	prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
 	wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
 	wl_v6_fd = bpf_map__fd(skel->maps.tun_decap_whitelist_v6);
-	cfg_fd = bpf_map__fd(skel->maps.tun_decap_config);
 
-	/* Initialize config: enable all processing */
-	{
-		struct tun_decap_config cfg = {
-		    .disabled = 0,
-		    .disable_gre = 0,
-		    .disable_ipip = 0,
-		    .disable_stats = 0,
-		};
-		__u32 key = 0;
-		bpf_map_update_elem(cfg_fd, &key, &cfg, BPF_ANY);
-	}
+	/* Config is a global variable in .bss (zero = all enabled) */
+	skel->bss->cfg_global.disabled = 0;
+	skel->bss->cfg_global.disable_gre = 0;
+	skel->bss->cfg_global.disable_ipip = 0;
+	skel->bss->cfg_global.disable_stats = 0;
 
 	/* Set up whitelists: add all IPs that whitelisted tests need */
 	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);

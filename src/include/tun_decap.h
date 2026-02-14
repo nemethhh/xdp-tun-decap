@@ -71,8 +71,6 @@ struct ipv6_addr {
 #define MAP_PIN_PATH_WHITELIST    "/sys/fs/bpf/tun_decap_whitelist"
 #define MAP_PIN_PATH_WHITELIST_V6 "/sys/fs/bpf/tun_decap_whitelist_v6"
 #define MAP_PIN_PATH_STATS        "/sys/fs/bpf/tun_decap_stats"
-#define MAP_PIN_PATH_CONFIG       "/sys/fs/bpf/tun_decap_config"
-
 /*
  * Configuration structure for runtime control
  *
@@ -96,7 +94,6 @@ struct tun_decap_config {
  * Map size limits
  */
 #define WHITELIST_MAX_ENTRIES 1024
-#define CONFIG_MAX_ENTRIES    1
 
 /*
  * XDP dispatcher priority

@@ -14,8 +14,9 @@ jobs:
     strategy:
       matrix:
         whitelist: [0, 1]
+        stats: [0, 1]
 
-    name: build-and-test (WHITELIST=${{ matrix.whitelist }})
+    name: "build-and-test (WHITELIST=${{ matrix.whitelist }}, STATS=${{ matrix.stats }})"
 
     steps:
       - name: Checkout code
@@ -75,9 +76,9 @@ jobs:
           fi
           mount | grep bpf
 
-      - name: Build BPF program (WHITELIST=${{ matrix.whitelist }})
+      - name: "Build BPF program (WHITELIST=${{ matrix.whitelist }}, STATS=${{ matrix.stats }})"
         run: |
-          make all WHITELIST=${{ matrix.whitelist }}
+          make all WHITELIST=${{ matrix.whitelist }} STATS=${{ matrix.stats }}
           ls -lh build/
           file build/tun_decap.bpf.o
 
@@ -85,7 +86,7 @@ jobs:
         if: github.actor != 'nektos/act'
         uses: actions/upload-artifact@v4
         with:
-          name: xdp-tun-decap-wl${{ matrix.whitelist }}-${{ github.sha }}
+          name: xdp-tun-decap-wl${{ matrix.whitelist }}-stats${{ matrix.stats }}-${{ github.sha }}
           path: |
             build/tun_decap.bpf.o
             build/tun_decap.skel.h
@@ -94,14 +95,14 @@ jobs:
       - name: Local build summary
         if: github.actor == 'nektos/act'
         run: |
-          echo "=== Local Build Complete (WHITELIST=${{ matrix.whitelist }}) ==="
+          echo "=== Local Build Complete (WHITELIST=${{ matrix.whitelist }}, STATS=${{ matrix.stats }}) ==="
           echo ""
           echo "Build artifacts:"
           ls -lh build/
           echo ""
           echo "Note: Artifact upload skipped (running with act)"
 
-      - name: Run integration tests (WHITELIST=${{ matrix.whitelist }})
+      - name: "Run integration tests (WHITELIST=${{ matrix.whitelist }}, STATS=${{ matrix.stats }})"
         if: github.actor != 'nektos/act'
         run: |
           cd tests
@@ -111,7 +112,7 @@ jobs:
       - name: Skip integration tests (act)
         if: github.actor == 'nektos/act'
         run: |
-          echo "=== Integration Tests Skipped (WHITELIST=${{ matrix.whitelist }}) ==="
+          echo "=== Integration Tests Skipped (WHITELIST=${{ matrix.whitelist }}, STATS=${{ matrix.stats }}) ==="
           echo ""
           echo "Integration tests require Docker-in-Docker and are skipped when running with act."
           echo "These tests will run on GitHub Actions."

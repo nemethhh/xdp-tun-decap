@@ -12,16 +12,19 @@ on:
         type: string
 
 jobs:
-  create-release:
+  build:
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write # Required for creating releases
+
+    strategy:
+      matrix:
+        whitelist: [0, 1]
+        stats: [0, 1]
+
+    name: "Build (WHITELIST=${{ matrix.whitelist }}, STATS=${{ matrix.stats }})"
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Full history for changelog
 
       - name: Setup environment for act
         run: |
@@ -29,18 +32,6 @@ jobs:
           if ! command -v sudo &> /dev/null; then
             apt-get update && apt-get install -y sudo
           fi
-
-      - name: Set version from tag
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.tag }}"
-          else
-            VERSION=${GITHUB_REF#refs/tags/}
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "version_number=${VERSION#v}" >> $GITHUB_OUTPUT
-          echo "Release version: $VERSION"
 
       - name: Install dependencies
         run: |
@@ -103,22 +94,56 @@ jobs:
           VMLINUX_EOF
           fi
 
-      - name: "Build release artifacts (default: WHITELIST=1)"
+      - name: "Build BPF program (WHITELIST=${{ matrix.whitelist }}, STATS=${{ matrix.stats }})"
         run: |
-          make all WHITELIST=1
-          make test-build WHITELIST=1
+          make all WHITELIST=${{ matrix.whitelist }} STATS=${{ matrix.stats }}
 
-      - name: Verify WHITELIST=0 compiles
-        run: |
-          make clean
-          make all WHITELIST=0
-          echo "WHITELIST=0 build verified"
+          VARIANT="wl${{ matrix.whitelist }}-stats${{ matrix.stats }}"
+          cp build/tun_decap.bpf.o "build/tun_decap-${VARIANT}.bpf.o"
+          cp build/tun_decap.skel.h "build/tun_decap-${VARIANT}.skel.h"
 
-      - name: "Rebuild default for packaging (WHITELIST=1)"
+          echo "Built variant: ${VARIANT}"
+          ls -lh build/tun_decap-${VARIANT}.*
+          file "build/tun_decap-${VARIANT}.bpf.o"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: "build-wl${{ matrix.whitelist }}-stats${{ matrix.stats }}"
+          path: |
+            build/tun_decap-wl${{ matrix.whitelist }}-stats${{ matrix.stats }}.bpf.o
+            build/tun_decap-wl${{ matrix.whitelist }}-stats${{ matrix.stats }}.skel.h
+          retention-days: 5
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write # Required for creating releases
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for changelog
+
+      - name: Set version from tag
+        id: version
         run: |
-          make clean
-          make all WHITELIST=1
-          make test-build WHITELIST=1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.tag }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_number=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "Release version: $VERSION"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: "build-*"
 
       - name: Create release package
         run: |
@@ -128,10 +153,12 @@ jobs:
           # Create release directory
           mkdir -p release/${PKG_NAME}
 
-          # Copy binary artifacts
-          cp build/tun_decap.bpf.o release/${PKG_NAME}/
-          cp build/tun_decap.skel.h release/${PKG_NAME}/
-          cp build/test_decap release/${PKG_NAME}/
+          # Collect all variant binaries
+          mkdir -p release/${PKG_NAME}/bin
+          for dir in artifacts/build-*; do
+            cp "${dir}"/*.bpf.o release/${PKG_NAME}/bin/
+            cp "${dir}"/*.skel.h release/${PKG_NAME}/bin/
+          done
 
           # Copy documentation
           cp README.md release/${PKG_NAME}/
@@ -142,16 +169,30 @@ jobs:
           mkdir -p release/${PKG_NAME}/src
           cp -r src/* release/${PKG_NAME}/src/
 
+          echo "=== Release package contents ==="
+          find release/${PKG_NAME}/bin -type f | sort
+          echo ""
+
           # Create tarball
           cd release
           tar czf ${PKG_NAME}.tar.gz ${PKG_NAME}
           cd ..
 
-          # Create checksums
+          # Create checksums for all artifacts
           cd release
           sha256sum ${PKG_NAME}.tar.gz > ${PKG_NAME}.tar.gz.sha256
-          sha256sum ${PKG_NAME}/tun_decap.bpf.o > tun_decap.bpf.o.sha256
+          for f in ${PKG_NAME}/bin/*.bpf.o; do
+            name=$(basename "$f")
+            sha256sum "$f" > "${name}.sha256"
+          done
           cd ..
+
+          # Copy individual BPF objects to release root for direct download
+          cp release/${PKG_NAME}/bin/*.bpf.o release/
+          cp release/${PKG_NAME}/bin/*.skel.h release/
+
+          echo "=== Release artifacts ==="
+          ls -lh release/*.tar.gz release/*.bpf.o release/*.sha256
 
       - name: Generate changelog
         id: changelog
@@ -175,6 +216,17 @@ jobs:
 
           ### Changes
           $CHANGELOG
+
+          ### Build Variants
+
+          Each release includes pre-built BPF objects for all compile-time flag combinations:
+
+          | File | WHITELIST | STATS | Description |
+          |------|:---------:|:-----:|-------------|
+          | \`tun_decap-wl1-stats0.bpf.o\` | 1 | 0 | Whitelist enabled, stats disabled |
+          | \`tun_decap-wl1-stats1.bpf.o\` | 1 | 1 | Whitelist enabled, stats enabled |
+          | \`tun_decap-wl0-stats0.bpf.o\` | 0 | 0 | No whitelist, no stats (max performance) |
+          | \`tun_decap-wl0-stats1.bpf.o\` | 0 | 1 | No whitelist, stats enabled |
 
           ### Features
           - High-performance GRE and IPIP tunnel decapsulation using XDP
@@ -200,7 +252,14 @@ jobs:
           make all
 
           # Or use pre-built binary (if kernel-compatible)
-          sudo xdp-loader load -m native eth0 tun_decap.bpf.o
+          # Whitelist enabled, no stats (default):
+          sudo xdp-loader load -m native eth0 bin/tun_decap-wl1-stats0.bpf.o
+
+          # Max performance (no whitelist, no stats):
+          sudo xdp-loader load -m native eth0 bin/tun_decap-wl0-stats0.bpf.o
+
+          # Full observability (whitelist + stats):
+          sudo xdp-loader load -m native eth0 bin/tun_decap-wl1-stats1.bpf.o
           \`\`\`
 
           ### Checksums
@@ -227,9 +286,18 @@ jobs:
           files: |
             release/xdp-tun-decap-${{ steps.version.outputs.version }}.tar.gz
             release/xdp-tun-decap-${{ steps.version.outputs.version }}.tar.gz.sha256
-            release/tun_decap.bpf.o.sha256
-            build/tun_decap.bpf.o
-            build/tun_decap.skel.h
+            release/tun_decap-wl1-stats0.bpf.o
+            release/tun_decap-wl1-stats0.bpf.o.sha256
+            release/tun_decap-wl1-stats1.bpf.o
+            release/tun_decap-wl1-stats1.bpf.o.sha256
+            release/tun_decap-wl0-stats0.bpf.o
+            release/tun_decap-wl0-stats0.bpf.o.sha256
+            release/tun_decap-wl0-stats1.bpf.o
+            release/tun_decap-wl0-stats1.bpf.o.sha256
+            release/tun_decap-wl1-stats0.skel.h
+            release/tun_decap-wl1-stats1.skel.h
+            release/tun_decap-wl0-stats0.skel.h
+            release/tun_decap-wl0-stats1.skel.h
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -241,8 +309,8 @@ jobs:
           path: |
             release/xdp-tun-decap-${{ steps.version.outputs.version }}.tar.gz
             release/*.sha256
-            build/tun_decap.bpf.o
-            build/tun_decap.skel.h
+            release/*.bpf.o
+            release/*.skel.h
           retention-days: 90
 
       - name: Local release summary
@@ -251,9 +319,9 @@ jobs:
           echo "=== Local Build Complete ==="
           echo ""
           echo "Release artifacts created in ./release/"
-          ls -lh release/
+          ls -lh release/*.tar.gz release/*.bpf.o release/*.sha256 2>/dev/null || true
           echo ""
-          echo "Build artifacts:"
-          ls -lh build/*.o build/*.h 2>/dev/null || true
+          echo "Build variants:"
+          ls -lh release/tun_decap*.bpf.o 2>/dev/null || true
           echo ""
           echo "Note: GitHub release creation skipped (running with act)"

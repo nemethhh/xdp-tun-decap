@@ -206,6 +206,8 @@ Whitelist maps only exist when compiled with `WHITELIST=1` (default):
    - Runtime control to disable processing (processing is **enabled by default**)
    - Uses inverted logic: zero-initialized map = all processing enabled
    - Fields: `disabled`, `disable_gre`, `disable_ipip`, `disable_stats` (0=enabled, 1=disabled)
+   - `bypass_dst_net`: Inner IPv4 dst subnet to skip decap (0=disabled, network byte order)
+   - `bypass_dst_mask`: Subnet mask for bypass (network byte order)
    - No initialization required - works out of the box
 
 ### Helper Libraries
@@ -378,6 +380,15 @@ sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
 # Re-enable everything: set all to 0
 sudo bpftool map update pinned /sys/fs/bpf/tun_decap_config \
     key hex 00 00 00 00 value hex 00 00 00 00
+
+# Set bypass destination subnet (skip decap for matching inner dst)
+# Packets with inner IPv4 dst matching this subnet pass through to kernel
+# without decapsulation (e.g., for kernel GRE tunnel control plane traffic)
+#
+# Example: bypass 172.20.5.48/30 (GRE tunnel endpoint subnet)
+# bypass_dst_net  = 172.20.5.48 = ac 14 05 30
+# bypass_dst_mask = /30          = ff ff ff fc
+# Set via skeleton .bss->cfg_global or bpftool on the program's .bss map
 
 # View current config
 sudo bpftool map dump pinned /sys/fs/bpf/tun_decap_config

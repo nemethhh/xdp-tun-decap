@@ -130,6 +130,82 @@ sudo python3 map_manager/xdp_tun_decap_manager.py stats
 # 13 - pass_non_tunnel        (Non-tunnel traffic passed)
 ```
 
+### Runtime configuration
+
+Runtime configuration is stored as a BPF global variable (`cfg_global`) in the program's `.bss` map. Fields are zero-initialized, meaning all processing is enabled by default with no bypass. Configuration can be modified at any time while the program is running.
+
+**Config fields (`struct tun_decap_config`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `disabled` | `__u8` | 0 | Master disable switch (1=disable all processing) |
+| `disable_gre` | `__u8` | 0 | Disable GRE decapsulation |
+| `disable_ipip` | `__u8` | 0 | Disable IPIP decapsulation |
+| `disable_stats` | `__u8` | 0 | Disable statistics collection |
+| `bypass_dst_net` | `__be32` | 0 | Inner destination subnet to skip decap (network byte order, 0=disabled) |
+| `bypass_dst_mask` | `__be32` | 0 | Subnet mask for bypass (network byte order) |
+
+To modify configuration, find the `.bss` map ID and update it with `bpftool`:
+
+```bash
+# Find the .bss map ID
+bpftool map show | grep bss
+# Example output: 11: array  name tun_deca.bss  flags 0x400
+
+# View current config
+bpftool map dump id <MAP_ID>
+
+# Disable all processing
+bpftool map update id <MAP_ID> \
+    key hex 00 00 00 00 \
+    value hex 01 00 00 00 00 00 00 00 00 00 00 00
+
+# Re-enable all processing (reset to defaults)
+bpftool map update id <MAP_ID> \
+    key hex 00 00 00 00 \
+    value hex 00 00 00 00 00 00 00 00 00 00 00 00
+```
+
+#### Bypass destination subnet
+
+When the XDP program is attached to an interface that also terminates a kernel GRE tunnel, it will decapsulate all GRE packets — including control plane traffic (BGP keepalives, health checks) that the kernel tunnel needs to process. This causes the kernel tunnel to lose connectivity.
+
+The bypass destination subnet solves this: packets whose inner IPv4 destination matches the configured subnet are passed through to the kernel without decapsulation.
+
+**Example:** A server runs a GRE tunnel to Imperva for BGP route announcements. The tunnel uses subnet `172.20.5.48/30`. Clean traffic (destined to VIPs) should be decapsulated by XDP, but tunnel control traffic (destined to `172.20.5.48/30`) must reach the kernel GRE interface intact.
+
+```bash
+# Load XDP program
+sudo ip link set dev enp1s0 xdp obj build/tun_decap.bpf.o sec xdp
+
+# Find .bss map ID
+bpftool map show | grep bss
+
+# Set bypass for 172.20.5.48/30
+# Value layout: [disabled, disable_gre, disable_ipip, disable_stats,
+#                bypass_dst_net (4 bytes), bypass_dst_mask (4 bytes)]
+#
+# 172.20.5.48 = ac 14 05 30
+# /30 mask    = ff ff ff fc
+bpftool map update id <MAP_ID> \
+    key hex 00 00 00 00 \
+    value hex 00 00 00 00 ac 14 05 30 ff ff ff fc
+
+# Verify config
+bpftool map dump id <MAP_ID>
+
+# Verify kernel tunnel still works
+birdc show protocols  # BGP session should stay Established
+```
+
+To disable the bypass (decapsulate everything), set `bypass_dst_net` back to zero:
+
+```bash
+bpftool map update id <MAP_ID> \
+    key hex 00 00 00 00 \
+    value hex 00 00 00 00 00 00 00 00 00 00 00 00
+```
+
 ### Unloading
 
 ```bash

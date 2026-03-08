@@ -1495,4 +1495,53 @@ static unsigned char pkt_gre_bypass_dst[] = {
 
 #define PKT_GRE_BYPASS_DST_LEN sizeof(pkt_gre_bypass_dst)
 
+/*
+ * GRE-encapsulated IPv6 packet with inner dst matching bypass prefix
+ *
+ * Same as pkt_gre_ipv6_inner but inner dest = fd00:10:11::ac14:531
+ * Used to test bypass_dst6_net/mask feature.
+ *
+ * Structure:
+ * [Ethernet: 14 bytes]
+ * [Outer IPv4: 20 bytes, proto=47 (GRE), src=10.0.0.1]
+ * [GRE: 4 bytes, proto=0x86DD (IPv6)]
+ * [Inner IPv6: 40 bytes, next_hdr=58 (ICMPv6), dst=fd00:10:11::ac14:531]
+ * [ICMPv6: 8 bytes]
+ *
+ * Total: 86 bytes
+ */
+static unsigned char pkt_gre_bypass_dst6[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0x08,
+    0x00, /* EtherType: IPv4 */
+
+    /* Outer IPv4 header (20 bytes) */
+    0x45, 0x00, 0x00, 0x48,             /* Total length: 72 bytes */
+    0x00, 0x01, 0x00, 0x00, 0x40, 0x2f, /* Protocol: 47 (GRE) */
+    0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, /* Source IP: 10.0.0.1 (whitelisted) */
+    0xc0, 0xa8, 0x01, 0x01,
+
+    /* GRE header (4 bytes) */
+    0x00, 0x00, 0x86, 0xdd, /* Protocol: IPv6 (0x86DD) */
+
+    /* Inner IPv6 header (40 bytes) */
+    0x60, 0x00, 0x00, 0x00, /* Version=6, Traffic class, Flow label */
+    0x00, 0x08,             /* Payload length: 8 bytes */
+    0x3a,                   /* Next header: 58 (ICMPv6) */
+    0x40,                   /* Hop limit: 64 */
+    /* Source address: 2001:db8::1 */
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+    /* Destination address: fd00:10:11::ac14:531 (bypass target) */
+    0xfd, 0x00, 0x00, 0x10, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xac, 0x14, 0x05, 0x31,
+
+    /* ICMPv6 Echo Request (8 bytes) */
+    0x80,       /* Type: Echo Request */
+    0x00,       /* Code */
+    0x00, 0x00, /* Checksum */
+    0x00, 0x01, /* Identifier */
+    0x00, 0x01, /* Sequence number */
+};
+
+#define PKT_GRE_BYPASS_DST6_LEN sizeof(pkt_gre_bypass_dst6)
+
 #endif /* __TEST_PACKETS_H */

@@ -1169,6 +1169,70 @@ cleanup:
 	skel->bss->cfg_global.bypass_dst_mask = 0;
 }
 
+/*
+ * Test: GRE packet with IPv6 inner dst matching bypass prefix should NOT be decapsulated
+ */
+static void test_gre_bypass_dst6(struct tun_decap_bpf *skel)
+{
+	const char *name = "GRE bypass (inner IPv6 dst matches bypass prefix)";
+	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+	__u32 retval;
+	unsigned char data_out[256];
+	size_t data_out_len = sizeof(data_out);
+	int err;
+
+#ifdef ENABLE_WHITELIST
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
+	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
+#endif
+
+	/* Set bypass IPv6 prefix: fd00:10:11::/48
+	 * net  = fd00:0010:0011:0000:0000:0000:0000:0000
+	 * mask = ffff:ffff:ffff:0000:0000:0000:0000:0000
+	 */
+	skel->bss->cfg_global.bypass_dst6_net.addr[0] = htonl(0xfd000010);
+	skel->bss->cfg_global.bypass_dst6_net.addr[1] = htonl(0x00110000);
+	skel->bss->cfg_global.bypass_dst6_net.addr[2] = 0;
+	skel->bss->cfg_global.bypass_dst6_net.addr[3] = 0;
+	skel->bss->cfg_global.bypass_dst6_mask.addr[0] = htonl(0xffffffff);
+	skel->bss->cfg_global.bypass_dst6_mask.addr[1] = htonl(0xffff0000);
+	skel->bss->cfg_global.bypass_dst6_mask.addr[2] = 0;
+	skel->bss->cfg_global.bypass_dst6_mask.addr[3] = 0;
+
+	/* Run test with packet whose inner IPv6 dst is fd00:10:11::ac14:531 */
+	err = run_xdp_test(prog_fd, pkt_gre_bypass_dst6, PKT_GRE_BYPASS_DST6_LEN, &retval,
+	                   data_out, &data_out_len);
+	if (err < 0) {
+		TEST_FAIL(name, "bpf_prog_test_run failed");
+		goto cleanup;
+	}
+
+	/* Verify XDP_PASS (not decapsulated) */
+	if (retval != XDP_PASS) {
+		char buf[64];
+		snprintf(buf, sizeof(buf), "Expected XDP_PASS(%d), got %d", XDP_PASS, retval);
+		TEST_FAIL(name, buf);
+		goto cleanup;
+	}
+
+	/* Verify packet was NOT decapsulated - length should be unchanged */
+	if (data_out_len != PKT_GRE_BYPASS_DST6_LEN) {
+		char buf[96];
+		snprintf(buf, sizeof(buf), "Expected len=%zu (no decap), got %zu",
+		         (size_t)PKT_GRE_BYPASS_DST6_LEN, data_out_len);
+		TEST_FAIL(name, buf);
+		goto cleanup;
+	}
+
+	TEST_PASS(name);
+
+cleanup:
+	__builtin_memset((void *)&skel->bss->cfg_global.bypass_dst6_net, 0,
+	                 sizeof(skel->bss->cfg_global.bypass_dst6_net));
+	__builtin_memset((void *)&skel->bss->cfg_global.bypass_dst6_mask, 0,
+	                 sizeof(skel->bss->cfg_global.bypass_dst6_mask));
+}
+
 int main(int argc, char **argv)
 {
 	struct tun_decap_bpf *skel;
@@ -1225,6 +1289,10 @@ int main(int argc, char **argv)
 	skel->bss->cfg_global.disable_stats = 0;
 	skel->bss->cfg_global.bypass_dst_net = 0;
 	skel->bss->cfg_global.bypass_dst_mask = 0;
+	memset((void *)&skel->bss->cfg_global.bypass_dst6_net, 0,
+	       sizeof(skel->bss->cfg_global.bypass_dst6_net));
+	memset((void *)&skel->bss->cfg_global.bypass_dst6_mask, 0,
+	       sizeof(skel->bss->cfg_global.bypass_dst6_mask));
 
 	printf("Config global initialized (all processing enabled)\n");
 
@@ -1259,6 +1327,7 @@ int main(int argc, char **argv)
 
 	/* Bypass destination tests */
 	test_gre_bypass_dst(skel);
+	test_gre_bypass_dst6(skel);
 
 	/* Pass-through and malformed packet tests */
 	test_tcp_passthrough(skel);

@@ -208,6 +208,8 @@ Whitelist maps only exist when compiled with `WHITELIST=1` (default):
    - Fields: `disabled`, `disable_gre`, `disable_ipip`, `disable_stats` (0=enabled, 1=disabled)
    - `bypass_dst_net`: Inner IPv4 dst subnet to skip decap (0=disabled, network byte order)
    - `bypass_dst_mask`: Subnet mask for bypass (network byte order)
+   - `bypass_dst6_net`: Inner IPv6 dst prefix to skip decap (struct ipv6_addr, 0=disabled)
+   - `bypass_dst6_mask`: IPv6 prefix mask for bypass (struct ipv6_addr)
    - No initialization required - works out of the box
 
 ### Helper Libraries

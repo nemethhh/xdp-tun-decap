@@ -213,6 +213,28 @@ static __always_inline int is_bypass_dst(__be32 daddr)
 }
 
 /*
+ * Check if inner IPv6 destination matches bypass prefix
+ *
+ * @daddr: Pointer to inner IPv6 destination address (struct in6_addr)
+ * @return: 1 if bypass (skip decap), 0 otherwise
+ */
+static __always_inline int is_bypass_dst_v6(const struct in6_addr *daddr)
+{
+	volatile struct ipv6_addr *net = &cfg_global.bypass_dst6_net;
+	volatile struct ipv6_addr *mask = &cfg_global.bypass_dst6_mask;
+	const __u32 *d = (const __u32 *)daddr;
+
+	/* Quick check: bypass disabled if net is all zeros */
+	if (!(net->addr[0] | net->addr[1] | net->addr[2] | net->addr[3]))
+		return 0;
+
+	return ((d[0] & mask->addr[0]) == net->addr[0]) &&
+	       ((d[1] & mask->addr[1]) == net->addr[1]) &&
+	       ((d[2] & mask->addr[2]) == net->addr[2]) &&
+	       ((d[3] & mask->addr[3]) == net->addr[3]);
+}
+
+/*
  * Perform decapsulation by removing outer headers
  *
  * Uses forward-copy technique (Katran-style):
@@ -352,6 +374,14 @@ static __always_inline int handle_gre(struct xdp_md *ctx, struct iphdr *outer_ip
 			return XDP_DROP;
 		}
 
+		/* Check bypass: skip decap for kernel tunnel traffic */
+		struct ipv6hdr *inner_ip6h = (void *)greh + gre_len;
+		if (is_bypass_dst_v6(&inner_ip6h->daddr)) {
+			if (stats)
+				stats->pass_non_tunnel++;
+			return XDP_PASS;
+		}
+
 		if (stats)
 			stats->rx_gre_ipv6_inner++;
 	} else {
@@ -458,6 +488,13 @@ static __always_inline int handle_ipv6_in_ipv4(struct xdp_md *ctx, struct iphdr 
 		return XDP_DROP;
 	}
 
+	/* Check bypass: skip decap for kernel tunnel traffic */
+	if (is_bypass_dst_v6(&inner_ip6h->daddr)) {
+		if (stats)
+			stats->pass_non_tunnel++;
+		return XDP_PASS;
+	}
+
 	if (stats)
 		stats->rx_ipip_ipv6_inner++;
 
@@ -534,6 +571,14 @@ static __always_inline int handle_gre_ipv6(struct xdp_md *ctx, struct ipv6hdr *o
 			if (stats)
 				stats->drop_malformed++;
 			return XDP_DROP;
+		}
+
+		/* Check bypass: skip decap for kernel tunnel traffic */
+		struct ipv6hdr *inner_ip6h = (void *)greh + gre_len;
+		if (is_bypass_dst_v6(&inner_ip6h->daddr)) {
+			if (stats)
+				stats->pass_non_tunnel++;
+			return XDP_PASS;
 		}
 
 		if (stats)
@@ -624,6 +669,13 @@ static __always_inline int handle_ipip_ipv6(struct xdp_md *ctx, struct ipv6hdr *
 			if (stats)
 				stats->drop_malformed++;
 			return XDP_DROP;
+		}
+
+		/* Check bypass: skip decap for kernel tunnel traffic */
+		if (is_bypass_dst_v6(&inner_ip6h->daddr)) {
+			if (stats)
+				stats->pass_non_tunnel++;
+			return XDP_PASS;
 		}
 
 		inner_proto = ETH_P_IPV6;

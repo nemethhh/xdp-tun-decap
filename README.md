@@ -142,8 +142,10 @@ Runtime configuration is stored as a BPF global variable (`cfg_global`) in the p
 | `disable_gre` | `__u8` | 0 | Disable GRE decapsulation |
 | `disable_ipip` | `__u8` | 0 | Disable IPIP decapsulation |
 | `disable_stats` | `__u8` | 0 | Disable statistics collection |
-| `bypass_dst_net` | `__be32` | 0 | Inner destination subnet to skip decap (network byte order, 0=disabled) |
-| `bypass_dst_mask` | `__be32` | 0 | Subnet mask for bypass (network byte order) |
+| `bypass_dst_net` | `__be32` | 0 | Inner IPv4 destination subnet to skip decap (network byte order, 0=disabled) |
+| `bypass_dst_mask` | `__be32` | 0 | IPv4 subnet mask for bypass (network byte order) |
+| `bypass_dst6_net` | `struct ipv6_addr` | 0 | Inner IPv6 destination prefix to skip decap (0=disabled) |
+| `bypass_dst6_mask` | `struct ipv6_addr` | 0 | IPv6 prefix mask for bypass |
 
 To modify configuration, find the `.bss` map ID and update it with `bpftool`:
 
@@ -156,23 +158,38 @@ bpftool map show | grep bss
 bpftool map dump id <MAP_ID>
 
 # Disable all processing
+# Value layout (44 bytes total):
+#   [0]    disabled        (1 byte)
+#   [1]    disable_gre     (1 byte)
+#   [2]    disable_ipip    (1 byte)
+#   [3]    disable_stats   (1 byte)
+#   [4-7]  bypass_dst_net  (4 bytes, __be32)
+#   [8-11] bypass_dst_mask (4 bytes, __be32)
+#   [12-27] bypass_dst6_net  (16 bytes, IPv6 address)
+#   [28-43] bypass_dst6_mask (16 bytes, IPv6 prefix mask)
 bpftool map update id <MAP_ID> \
     key hex 00 00 00 00 \
-    value hex 01 00 00 00 00 00 00 00 00 00 00 00
+    value hex 01 00 00 00 \
+               00 00 00 00 00 00 00 00 \
+               00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+               00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 
 # Re-enable all processing (reset to defaults)
 bpftool map update id <MAP_ID> \
     key hex 00 00 00 00 \
-    value hex 00 00 00 00 00 00 00 00 00 00 00 00
+    value hex 00 00 00 00 \
+               00 00 00 00 00 00 00 00 \
+               00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+               00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 ```
 
 #### Bypass destination subnet
 
 When the XDP program is attached to an interface that also terminates a kernel GRE tunnel, it will decapsulate all GRE packets — including control plane traffic (BGP keepalives, health checks) that the kernel tunnel needs to process. This causes the kernel tunnel to lose connectivity.
 
-The bypass destination subnet solves this: packets whose inner IPv4 destination matches the configured subnet are passed through to the kernel without decapsulation.
+The bypass destination subnet solves this: packets whose inner destination matches the configured subnet/prefix are passed through to the kernel without decapsulation. Both IPv4 and IPv6 inner destinations are supported independently.
 
-**Example:** A server runs a GRE tunnel to Imperva for BGP route announcements. The tunnel uses subnet `172.20.5.48/30`. Clean traffic (destined to VIPs) should be decapsulated by XDP, but tunnel control traffic (destined to `172.20.5.48/30`) must reach the kernel GRE interface intact.
+**Example: IPv4 bypass.** A server runs a GRE tunnel to Imperva for BGP route announcements. The tunnel uses subnet `172.20.5.48/30`. Clean traffic (destined to VIPs) should be decapsulated by XDP, but tunnel control traffic (destined to `172.20.5.48/30`) must reach the kernel GRE interface intact.
 
 ```bash
 # Load XDP program
@@ -181,15 +198,15 @@ sudo ip link set dev enp1s0 xdp obj build/tun_decap.bpf.o sec xdp
 # Find .bss map ID
 bpftool map show | grep bss
 
-# Set bypass for 172.20.5.48/30
-# Value layout: [disabled, disable_gre, disable_ipip, disable_stats,
-#                bypass_dst_net (4 bytes), bypass_dst_mask (4 bytes)]
-#
+# Set IPv4 bypass for 172.20.5.48/30
 # 172.20.5.48 = ac 14 05 30
 # /30 mask    = ff ff ff fc
 bpftool map update id <MAP_ID> \
     key hex 00 00 00 00 \
-    value hex 00 00 00 00 ac 14 05 30 ff ff ff fc
+    value hex 00 00 00 00 \
+               ac 14 05 30 ff ff ff fc \
+               00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+               00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 
 # Verify config
 bpftool map dump id <MAP_ID>
@@ -198,12 +215,29 @@ bpftool map dump id <MAP_ID>
 birdc show protocols  # BGP session should stay Established
 ```
 
-To disable the bypass (decapsulate everything), set `bypass_dst_net` back to zero:
+**Example: IPv6 bypass.** If the tunnel also carries IPv6 control traffic (e.g., on `fd00:10:11::/48`), set the IPv6 bypass prefix alongside the IPv4 one:
+
+```bash
+# Set both IPv4 bypass (172.20.5.48/30) and IPv6 bypass (fd00:10:11::/48)
+# fd00:0010:0011:: = fd 00 00 10 00 11 00 00 00 00 00 00 00 00 00 00
+# /48 mask         = ff ff ff ff ff ff 00 00 00 00 00 00 00 00 00 00
+bpftool map update id <MAP_ID> \
+    key hex 00 00 00 00 \
+    value hex 00 00 00 00 \
+               ac 14 05 30 ff ff ff fc \
+               fd 00 00 10 00 11 00 00 00 00 00 00 00 00 00 00 \
+               ff ff ff ff ff ff 00 00 00 00 00 00 00 00 00 00
+```
+
+To disable all bypass (decapsulate everything), zero out the entire config:
 
 ```bash
 bpftool map update id <MAP_ID> \
     key hex 00 00 00 00 \
-    value hex 00 00 00 00 00 00 00 00 00 00 00 00
+    value hex 00 00 00 00 \
+               00 00 00 00 00 00 00 00 \
+               00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+               00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 ```
 
 ### Unloading

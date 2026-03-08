@@ -198,6 +198,21 @@ static __always_inline int is_whitelisted_v6(const struct in6_addr *ip6_addr)
 #endif /* ENABLE_WHITELIST */
 
 /*
+ * Check if inner IPv4 destination matches bypass subnet
+ *
+ * Used to skip decapsulation for packets destined to the kernel
+ * GRE tunnel endpoint (e.g., BGP control plane traffic).
+ *
+ * @daddr: Inner IPv4 destination in network byte order
+ * @return: 1 if bypass (skip decap), 0 otherwise
+ */
+static __always_inline int is_bypass_dst(__be32 daddr)
+{
+	return cfg_global.bypass_dst_net &&
+	       (daddr & cfg_global.bypass_dst_mask) == cfg_global.bypass_dst_net;
+}
+
+/*
  * Perform decapsulation by removing outer headers
  *
  * Uses forward-copy technique (Katran-style):
@@ -318,6 +333,14 @@ static __always_inline int handle_gre(struct xdp_md *ctx, struct iphdr *outer_ip
 				stats->drop_malformed++;
 			return XDP_DROP;
 		}
+
+		/* Check bypass: skip decap for kernel tunnel traffic */
+		struct iphdr *inner_iph = (void *)greh + gre_len;
+		if (is_bypass_dst(inner_iph->daddr)) {
+			if (stats)
+				stats->pass_non_tunnel++;
+			return XDP_PASS;
+		}
 	} else if (inner_proto == ETH_P_IPV6) {
 		/* IPv6 inner packet */
 		gre_len = gre_hdr_len(greh->flags);
@@ -382,6 +405,13 @@ static __always_inline int handle_ipip(struct xdp_md *ctx, struct iphdr *outer_i
 		if (stats)
 			stats->drop_malformed++;
 		return XDP_DROP;
+	}
+
+	/* Check bypass: skip decap for kernel tunnel traffic */
+	if (is_bypass_dst(inner_iph->daddr)) {
+		if (stats)
+			stats->pass_non_tunnel++;
+		return XDP_PASS;
 	}
 
 	/* IPIP: only remove outer IP header (no tunnel header) */
@@ -489,6 +519,14 @@ static __always_inline int handle_gre_ipv6(struct xdp_md *ctx, struct ipv6hdr *o
 				stats->drop_malformed++;
 			return XDP_DROP;
 		}
+
+		/* Check bypass: skip decap for kernel tunnel traffic */
+		struct iphdr *inner_iph = (void *)greh + gre_len;
+		if (is_bypass_dst(inner_iph->daddr)) {
+			if (stats)
+				stats->pass_non_tunnel++;
+			return XDP_PASS;
+		}
 	} else if (inner_proto == ETH_P_IPV6) {
 		gre_len = gre_hdr_len(greh->flags);
 
@@ -557,6 +595,13 @@ static __always_inline int handle_ipip_ipv6(struct xdp_md *ctx, struct ipv6hdr *
 			if (stats)
 				stats->drop_malformed++;
 			return XDP_DROP;
+		}
+
+		/* Check bypass: skip decap for kernel tunnel traffic */
+		if (is_bypass_dst(inner_iph->daddr)) {
+			if (stats)
+				stats->pass_non_tunnel++;
+			return XDP_PASS;
 		}
 
 		inner_proto = ETH_P_IP;

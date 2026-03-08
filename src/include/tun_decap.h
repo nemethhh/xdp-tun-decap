@@ -82,6 +82,8 @@ struct tun_decap_config {
 	__u8 disable_gre;   /* Disable GRE processing (0=enabled, 1=disabled) */
 	__u8 disable_ipip;  /* Disable IPIP processing (0=enabled, 1=disabled) */
 	__u8 disable_stats; /* Disable statistics collection (0=enabled, 1=disabled) */
+	__be32 bypass_dst_net;  /* Inner dst subnet to skip decap (0=disabled) */
+	__be32 bypass_dst_mask; /* Subnet mask for bypass (network byte order) */
 };
 
 /*

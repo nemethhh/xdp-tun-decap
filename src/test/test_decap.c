@@ -1114,6 +1114,61 @@ static void print_summary(void)
 	}
 }
 
+/*
+ * Test: GRE packet with inner dst matching bypass subnet should NOT be decapsulated
+ */
+static void test_gre_bypass_dst(struct tun_decap_bpf *skel)
+{
+	const char *name = "GRE bypass (inner dst matches bypass subnet)";
+	int prog_fd = bpf_program__fd(skel->progs.xdp_tun_decap);
+	__u32 retval;
+	unsigned char data_out[256];
+	size_t data_out_len = sizeof(data_out);
+	int err;
+
+#ifdef ENABLE_WHITELIST
+	int wl_fd = bpf_map__fd(skel->maps.tun_decap_whitelist);
+	whitelist_add(wl_fd, TEST_IP_WHITELISTED_1);
+#endif
+
+	/* Set bypass subnet: 172.20.5.48/30 */
+	/* 172.20.5.48 = 0xac140530, mask /30 = 0xfffffffc */
+	skel->bss->cfg_global.bypass_dst_net = htonl(0xac140530);
+	skel->bss->cfg_global.bypass_dst_mask = htonl(0xfffffffc);
+
+	/* Run test with packet whose inner dst is 172.20.5.49 */
+	err = run_xdp_test(prog_fd, pkt_gre_bypass_dst, PKT_GRE_BYPASS_DST_LEN, &retval, data_out,
+	                   &data_out_len);
+	if (err < 0) {
+		TEST_FAIL(name, "bpf_prog_test_run failed");
+		goto cleanup;
+	}
+
+	/* Verify XDP_PASS (not decapsulated) */
+	if (retval != XDP_PASS) {
+		char buf[64];
+		snprintf(buf, sizeof(buf), "Expected XDP_PASS(%d), got %d", XDP_PASS, retval);
+		TEST_FAIL(name, buf);
+		goto cleanup;
+	}
+
+	/* Verify packet was NOT decapsulated - length should be unchanged */
+	if (data_out_len != PKT_GRE_BYPASS_DST_LEN) {
+		char buf[96];
+		snprintf(buf, sizeof(buf), "Expected len=%zu (no decap), got %zu",
+		         (size_t)PKT_GRE_BYPASS_DST_LEN, data_out_len);
+		TEST_FAIL(name, buf);
+		goto cleanup;
+	}
+
+	TEST_PASS(name);
+
+cleanup:
+	/* Reset bypass config for other tests */
+	skel->bss->cfg_global.bypass_dst_net = 0;
+	skel->bss->cfg_global.bypass_dst_mask = 0;
+}
+
 int main(int argc, char **argv)
 {
 	struct tun_decap_bpf *skel;
@@ -1168,6 +1223,8 @@ int main(int argc, char **argv)
 	skel->bss->cfg_global.disable_gre = 0;
 	skel->bss->cfg_global.disable_ipip = 0;
 	skel->bss->cfg_global.disable_stats = 0;
+	skel->bss->cfg_global.bypass_dst_net = 0;
+	skel->bss->cfg_global.bypass_dst_mask = 0;
 
 	printf("Config global initialized (all processing enabled)\n");
 
@@ -1199,6 +1256,9 @@ int main(int argc, char **argv)
 	test_gre_fragmented_drop(skel);
 	test_ipip_fragmented_drop(skel);
 	test_ipv6_fragment_ext_drop(skel);
+
+	/* Bypass destination tests */
+	test_gre_bypass_dst(skel);
 
 	/* Pass-through and malformed packet tests */
 	test_tcp_passthrough(skel);

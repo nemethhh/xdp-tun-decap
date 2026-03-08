@@ -1433,4 +1433,66 @@ static unsigned char pkt_ipv6_fragment_hdr[] = {
 
 #define PKT_IPV6_FRAGMENT_HDR_LEN sizeof(pkt_ipv6_fragment_hdr)
 
+/*
+ * GRE-encapsulated IPv4 packet with inner dst matching bypass subnet
+ *
+ * Same as pkt_gre_whitelisted but inner dest = 172.20.5.49 (0xac140531)
+ * Used to test bypass_dst_net/mask feature.
+ *
+ * Structure:
+ * [Ethernet: 14 bytes]
+ * [Outer IPv4: 20 bytes, proto=47 (GRE), src=10.0.0.1]
+ * [GRE: 4 bytes, no options, proto=0x0800 (IPv4)]
+ * [Inner IPv4: 20 bytes, proto=6 (TCP), src=172.16.0.1, dst=172.20.5.49]
+ * [TCP: 20 bytes]
+ *
+ * Total: 78 bytes
+ */
+static unsigned char pkt_gre_bypass_dst[] = {
+    /* Ethernet header (14 bytes) */
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, /* Destination MAC */
+    0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, /* Source MAC */
+    0x08, 0x00,                         /* EtherType: IPv4 */
+
+    /* Outer IPv4 header (20 bytes) */
+    0x45,                   /* Version=4, IHL=5 (20 bytes) */
+    0x00,                   /* DSCP/ECN */
+    0x00, 0x40,             /* Total length: 64 bytes */
+    0x00, 0x01,             /* Identification */
+    0x00, 0x00,             /* Flags + Fragment offset */
+    0x40,                   /* TTL: 64 */
+    0x2f,                   /* Protocol: 47 (GRE) */
+    0x00, 0x00,             /* Header checksum (zeroed) */
+    0x0a, 0x00, 0x00, 0x01, /* Source IP: 10.0.0.1 (whitelisted) */
+    0xc0, 0xa8, 0x01, 0x01, /* Dest IP: 192.168.1.1 */
+
+    /* GRE header (4 bytes, no optional fields) */
+    0x00, 0x00, /* Flags: C=0, K=0, S=0, Ver=0 */
+    0x08, 0x00, /* Protocol: IPv4 (0x0800) */
+
+    /* Inner IPv4 header (20 bytes) */
+    0x45,                   /* Version=4, IHL=5 */
+    0x00,                   /* DSCP/ECN */
+    0x00, 0x28,             /* Total length: 40 bytes */
+    0x00, 0x02,             /* Identification */
+    0x00, 0x00,             /* Flags + Fragment offset */
+    0x40,                   /* TTL: 64 */
+    0x06,                   /* Protocol: 6 (TCP) */
+    0x00, 0x00,             /* Header checksum */
+    0xac, 0x10, 0x00, 0x01, /* Source IP: 172.16.0.1 */
+    0xac, 0x14, 0x05, 0x31, /* Dest IP: 172.20.5.49 (bypass target) */
+
+    /* TCP header (20 bytes) */
+    0x00, 0x50,             /* Source port: 80 */
+    0x00, 0x51,             /* Dest port: 81 */
+    0x00, 0x00, 0x00, 0x01, /* Sequence number */
+    0x00, 0x00, 0x00, 0x00, /* Acknowledgment number */
+    0x50, 0x02,             /* Data offset=5, SYN flag */
+    0xff, 0xff,             /* Window size */
+    0x00, 0x00,             /* Checksum */
+    0x00, 0x00,             /* Urgent pointer */
+};
+
+#define PKT_GRE_BYPASS_DST_LEN sizeof(pkt_gre_bypass_dst)
+
 #endif /* __TEST_PACKETS_H */
